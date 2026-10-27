@@ -17,3 +17,7 @@ swift run --scratch-path "$scratch_dir" AgentGuardSelfTest
 "$project_dir/Tests/SecureInputRegression/run.sh"
 
 "$project_dir/Tests/DisplayRecoveryRegression/run.sh"
+
+"$project_dir/Tests/AuthenticationInputScopeRegression/run.sh"
+
+"$project_dir/Tests/AuthenticationLifecycleRegression/run.sh"

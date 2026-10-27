@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import AgentGuardCore
 
 @MainActor let NSApp = TestApplication()
@@ -6,6 +7,8 @@ import AgentGuardCore
     func activate(ignoringOtherApps: Bool) {}
 }
 @MainActor final class InputBlocker {
+    var recoveryMenuRegion: CGRect?
+    static var lastState: GuardState = .inactive
     static var healthy = true
     static var installCount = 0
     static var onInstall: (() -> Void)?
@@ -16,20 +19,24 @@ import AgentGuardCore
         Self.failure = failureHandler
         return Self.healthy
     }
-    func setState(_ state: GuardState) {}
+    func setState(_ state: GuardState) { Self.lastState = state }
 }
 @MainActor final class AuthenticationController {
     enum Outcome { case success, failed(String), timedOut }
+    static var willFinish: (() -> Void)?
     static var pending: ((Outcome) -> Void)?
     static var count = 0
-    func authenticate(timeout: TimeInterval, completion: @escaping (Outcome) -> Void) {
+    func authenticate(timeout: TimeInterval, willFinish: @escaping () -> Void, completion: @escaping (Outcome) -> Void) {
         Self.count += 1
+        Self.willFinish = willFinish
         Self.pending = completion
     }
-    func cancel() { Self.pending = nil }
+    func cancel() { Self.pending = nil; Self.willFinish?(); Self.willFinish = nil }
     static func finish(_ outcome: Outcome) {
         let callback = pending
         pending = nil
+        willFinish?()
+        willFinish = nil
         callback?(outcome)
     }
 }

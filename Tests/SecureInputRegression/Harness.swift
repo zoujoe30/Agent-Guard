@@ -49,7 +49,7 @@ import AgentGuardCore
         check(controller.state == .authenticating, "secure input polling does not cancel authentication")
         check(AuthenticationController.pending != nil, "authentication callback remains pending")
         AuthenticationController.finish(.failed("test cancellation"))
-        check(controller.state == .recoveryFailed, "failed authentication cannot resume while secure input enabled")
+        check(controller.state == .restoringInput, "failed authentication waits with input blocked while secure input enabled")
         check(DisplayBlackoutController.blackoutCount == 0, "failed authentication cannot black out while secure input enabled")
         controller.beginAuthentication()
         AuthenticationController.finish(.success)
@@ -65,11 +65,11 @@ import AgentGuardCore
         check(DisplayBlackoutController.blackoutCount == blackouts, "blackout is never attempted under secure input")
         controller.beginAuthentication()
         AuthenticationController.finish(.timedOut)
-        check(controller.state == .recoveryFailed, "timeout cannot resume unsafe guarding")
+        check(controller.state == .restoringInput, "timeout waits without reporting unsafe guarding")
         secure = false
         controller.beginAuthentication()
         AuthenticationController.finish(.failed("cancelled"))
-        check(controller.state == .recoveryFailed, "cancelled recovery authentication stays in fault without reblocking physical input")
+        check(controller.state == .guarding, "cancelled recovery authentication resumes only after input is safe")
         controller.deactivate()
         InputBlocker.healthy = false
         controller.activate()
@@ -98,7 +98,7 @@ import AgentGuardCore
         controller.beginAuthentication()
         InputBlocker.onInstall = { secure = true }
         AuthenticationController.finish(.failed("cancelled"))
-        check(controller.state == .recoveryFailed, "resume tap race remains in recovery fault")
+        check(controller.state == .restoringInput, "resume tap race keeps restricted restoration state")
         check(DisplayBlackoutController.blackoutCount == beforeRaceBlackouts + 1, "resume tap race never re-enters blackout")
         InputBlocker.onInstall = nil
         controller.deactivate()
@@ -121,7 +121,7 @@ import AgentGuardCore
         check(resumedTimer?.isValid == true, "resuming guarding restarts health timer")
         secure = true
         monitored.checkInputHealth()
-        check(resumedTimer?.isValid == false && timer(monitored) == nil, "fault transition invalidates and clears health timer")
+        check(resumedTimer?.isValid == false && timer(monitored)?.isValid == true, "fault transition retains recovery health monitoring")
         monitored.deactivate()
         secure = false
         monitored.activate()
@@ -198,6 +198,49 @@ import AgentGuardCore
         check(keyboardTest.state != .guarding, "initial keyboard failure never reports normal guarding")
         check(keyboardMessage?.contains("initial backlight failure") == true, "initial keyboard failure remains visible")
         KeyboardBacklightController.offError = nil
+        // Regression for coreautha releasing Secure Input AFTER the timeout callback.
+        var teardownSecure = false
+        var now: TimeInterval = 100
+        let teardown = GuardController(defaults: defaults, secureInputStatus: {
+            SecureInputStatus(enabled: teardownSecure, ownerPID: 777, ownerName: "coreautha")
+        }, monitorHealth: true, permissionCheck: { _ in true }, monotonicNow: { now })
+        teardown.activate()
+        check(teardown.state == .guarding, "teardown regression starts guarding")
+        teardown.beginAuthentication()
+        teardownSecure = true
+        AuthenticationController.finish(.timedOut)
+        check(teardown.state == .restoringInput, "timeout retains restricted teardown while coreautha secure input lingers")
+        check(InputBlocker.lastState == .restoringInput, "timeout revokes authentication input allowance immediately")
+        check(timer(teardown)?.isValid == true, "teardown keeps automatic recovery polling")
+        let noBlackout = DisplayBlackoutController.blackoutCount
+        teardown.checkInputHealth()
+        check(DisplayBlackoutController.blackoutCount == noBlackout, "secure teardown cannot black out displays")
+        now += 4
+        teardown.checkInputHealth()
+        check(teardown.state == .recoveryFailed && InputBlocker.lastState == .recoveryFailed, "persistent secure input produces restricted visible fault")
+        check(timer(teardown)?.isValid == true, "persistent teardown fault continues polling")
+        teardownSecure = false
+        teardown.checkInputHealth()
+        check(teardown.state == .guarding && InputBlocker.lastState == .guarding, "late secure input release restores actual guarding automatically")
+        teardown.beginAuthentication()
+        teardownSecure = true
+        AuthenticationController.finish(.failed("cancelled"))
+        check(teardown.state == .restoringInput, "cancelled password fallback also waits for secure teardown")
+        teardown.beginAuthentication()
+        check(teardown.state == .authenticating, "space retry can start a new authentication during teardown")
+        teardown.checkInputHealth()
+        check(teardown.state == .authenticating, "old teardown polling cannot overwrite a new authentication")
+        AuthenticationController.finish(.success)
+        check(teardown.state == .inactive && InputBlocker.lastState == .inactive, "only successful authentication releases physical input")
+        teardownSecure = false
+        teardown.activate()
+        teardown.beginAuthentication()
+        teardownSecure = true
+        AuthenticationController.finish(.timedOut)
+        teardown.deactivate()
+        teardownSecure = false
+        teardown.checkInputHealth()
+        check(teardown.state == .inactive, "deactivation cancels pending automatic resumption")
         print("SUCCESS: \(checks) regression assertions; no physical input, display or authentication operations")
     }
 }

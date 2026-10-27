@@ -1,6 +1,16 @@
 import CoreGraphics
 import Foundation
 
+@MainActor final class AuthenticationInputScope {
+    var recoveryMenuRegion: CGRect?
+    var allowPointer = false
+    var allowKeyboard = false
+    func setMode(authenticating: Bool, recovering: Bool) {}
+    func allowsPointer(at: CGPoint, type: CGEventType, authenticating: Bool, windowID: UInt32) -> Bool { allowPointer }
+    func allowsKeyboard(targetPID: Int32) -> Bool { allowKeyboard }
+}
+
+
 @main struct InputRegression {
     @MainActor static func main() async {
         let blocker = InputBlocker()
@@ -15,7 +25,7 @@ import Foundation
         }
         blocker.setState(.recoveryFailed)
         for event: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .scrollWheel, .keyDown, .keyUp] {
-            check(!drop(event, 0), "physical event \(event.rawValue) allowed in recovery")
+            check(drop(event, 0), "physical event \(event.rawValue) blocked in recovery")
             check(drop(event, 4321), "synthetic event \(event.rawValue) blocked in recovery")
         }
         var spaces = 0
@@ -23,13 +33,14 @@ import Foundation
         for event: CGEventType in [.keyDown, .keyUp] {
             for isRepeat in [false, true] {
                 for modifiers: UInt64 in [0, CGEventFlags.maskCommand.rawValue, CGEventFlags.maskShift.rawValue] {
-                    check(!blocker.shouldDrop(type:event,sourcePID:0,keyCode:49,isRepeat:isRepeat,modifierFlagsRawValue:modifiers,hasOtherModifiers:modifiers != 0), "physical recovery Space passes type=\(event.rawValue) repeat=\(isRepeat) modifiers=\(modifiers)")
+                    check(blocker.shouldDrop(type:event,sourcePID:0,keyCode:49,isRepeat:isRepeat,modifierFlagsRawValue:modifiers,hasOtherModifiers:modifiers != 0), "physical recovery Space consumed type=\(event.rawValue) repeat=\(isRepeat) modifiers=\(modifiers)")
                     check(blocker.shouldDrop(type:event,sourcePID:4321,keyCode:49,isRepeat:isRepeat,modifierFlagsRawValue:modifiers,hasOtherModifiers:modifiers != 0), "synthetic recovery Space blocked type=\(event.rawValue) repeat=\(isRepeat) modifiers=\(modifiers)")
                 }
             }
         }
         await Task.yield()
-        check(spaces == 0, "recovery Space never invokes authentication")
+        check(spaces == 3, "nonrepeated recovery Space invokes authentication while consuming key")
+        spaces = 0
         blocker.setState(.guarding)
         check(drop(.leftMouseDown, 0), "normal guarding still blocks physical mouse")
         check(!drop(.leftMouseDown, 4321), "normal guarding still allows agent input")
@@ -39,7 +50,16 @@ import Foundation
         await Task.yield()
         check(spaces == 1, "normal guarding invokes authentication once for physical Space")
         blocker.setState(.authenticating)
-        check(!drop(.leftMouseDown, 0), "authentication allows physical mouse")
+        check(drop(.leftMouseDown, 0), "authentication blocks mouse outside validated dialog")
+        blocker.inputScope.allowPointer = true
+        check(!drop(.leftMouseDown, 0), "authentication permits explicitly validated dialog pointer")
+        blocker.inputScope.allowPointer = false
+        check(drop(.keyDown, 0), "authentication blocks keyboard when trusted focus unknown")
+        blocker.inputScope.allowKeyboard = true
+        check(!drop(.keyDown, 0), "authentication permits keyboard only with trusted focus")
+        blocker.setState(.restoringInput)
+        check(drop(.leftMouseDown, 0) && drop(.leftMouseDown, 4321), "authentication teardown blocks physical and agent pointer")
+        blocker.setState(.authenticating)
         check(drop(.leftMouseDown, 4321), "authentication blocks synthetic mouse")
         // Actual event policy, without creating an event tap or injecting input.
         let shortcut = InputBlocker()
@@ -77,7 +97,7 @@ import Foundation
         _ = key(.keyUp, 5, 0)
         await Task.yield()
         check(activations == 2, "Command-first release activates once")
-        for state: GuardState in [.guarding, .authenticating, .recoveryFailed] {
+        for state: GuardState in [.guarding, .authenticating, .restoringInput, .recoveryFailed] {
             shortcut.setState(state)
             _ = key(.keyDown, 5); _ = key(.keyDown, 1)
             _ = key(.keyUp, 1); _ = key(.keyUp, 5)

@@ -118,6 +118,8 @@ private extension GuardState {
             return "guarding"
         case .authenticating:
             return "authenticating"
+        case .restoringInput:
+            return "restoringInput"
         case .recoveryFailed:
             return "recoveryFailed"
         }

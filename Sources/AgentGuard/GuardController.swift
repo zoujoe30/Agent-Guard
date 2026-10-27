@@ -17,6 +17,9 @@ final class GuardController {
     private let permissionCheck: ((Bool) -> Bool)?
     private let monitorHealth: Bool
     private var healthTimer: Timer?
+    private var pendingResumeMessage: String?
+    private var resumptionStartedAt: TimeInterval?
+    private let monotonicNow: () -> TimeInterval
     private var displayRecoveryError: String?
     private let defaults: UserDefaults
     private(set) var state: GuardState = .inactive
@@ -27,8 +30,10 @@ final class GuardController {
         defaults: UserDefaults = .standard,
         secureInputStatus: @escaping () -> SecureInputStatus = { SecureInputStatus.current() },
         monitorHealth: Bool = true,
-        permissionCheck: ((Bool) -> Bool)? = nil
+        permissionCheck: ((Bool) -> Bool)? = nil,
+        monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
+        self.monotonicNow = monotonicNow
         self.secureInputStatus = secureInputStatus
         self.monitorHealth = monitorHealth
         self.permissionCheck = permissionCheck
@@ -84,6 +89,10 @@ final class GuardController {
         let errors = [displayError, keyboardError].compactMap { $0 }
         let error = errors.isEmpty ? nil : errors.joined(separator: " ")
         onStateChange?(state, error.map { "显示恢复待完成：" + $0 } ?? "显示恢复已完成。")
+    }
+
+    func setRecoveryMenuRegion(_ rect: CGRect?) {
+        inputBlocker.recoveryMenuRegion = rect
     }
 
     func prepareActivationShortcut() {
@@ -163,8 +172,17 @@ final class GuardController {
         )
     }
 
-    // Only guarding is monitored: system authentication may legitimately enable Secure Input.
+    // Authentication teardown may leave Secure Input active briefly. Keep physical
+    // actions blocked until BOTH Secure Input and the event tap are ready.
     func checkInputHealth() {
+        if state == .restoringInput || (state == .recoveryFailed && pendingResumeMessage != nil) {
+            completeInputResumptionIfReady()
+            return
+        }
+        if state == .recoveryFailed {
+            _ = installInputBlocker()
+            return
+        }
         guard state == .guarding else { return }
         if let error = keyboardBacklight.keepOff() {
             enterRecoveryFailure(error)
@@ -183,7 +201,7 @@ final class GuardController {
     private func updateHealthMonitoring() {
         healthTimer?.invalidate()
         healthTimer = nil
-        guard state == .guarding, monitorHealth else { return }
+        guard (state == .guarding || state == .restoringInput || state == .recoveryFailed), monitorHealth else { return }
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkInputHealth() }
         }
@@ -197,6 +215,9 @@ final class GuardController {
     }
 
     private func enterRecoveryFailure(_ reason: String) {
+        pendingResumeMessage = nil
+        resumptionStartedAt = nil
+        inputBlocker.setState(.recoveryFailed)
         logger.fault("Guard recovery failed: \(reason, privacy: .public)")
         authenticator.cancel()
         let restoreError = restoreDisplays()
@@ -208,15 +229,18 @@ final class GuardController {
     }
 
     func deactivate() {
+        pendingResumeMessage = nil
+        resumptionStartedAt = nil
         authenticator.cancel()
         transition(to: .inactive)
     }
 
     func beginAuthentication() {
-        guard state == .guarding || state == .recoveryFailed else { return }
+        guard state == .guarding || state == .recoveryFailed || state == .restoringInput else { return }
         // A broken listener must never gate the mouse/menu authentication escape path.
         // If healthy, retain it to suppress Agent-generated input during authentication.
-        let recovering = state == .recoveryFailed
+        pendingResumeMessage = nil
+        resumptionStartedAt = nil
         _ = installInputBlocker()
         transition(to: .authenticating)
         // Display availability must not gate identity verification. A powered-off
@@ -228,24 +252,19 @@ final class GuardController {
         }
         NSApp.activate(ignoringOtherApps: true)
 
-        authenticator.authenticate(timeout: 10) { [weak self] outcome in
+        authenticator.authenticate(timeout: 10, willFinish: { [weak self] in
+            // Revoke every authentication allowance before LAContext invalidation.
+            self?.inputBlocker.setState(.restoringInput)
+        }) { [weak self] outcome in
             guard let self else { return }
             switch outcome {
             case .success:
                 self.transition(to: .inactive)
             case .timedOut:
-                if recovering || displayError != nil {
-                    self.transition(to: .recoveryFailed, message: "验证已超时，请从菜单重试；实体空格正常可用。")
-                    return
-                }
                 self.resumeGuardingAfterAuthentication(
                     message: "验证已超时，托管模式继续。"
                 )
             case .failed(let reason):
-                if recovering || displayError != nil {
-                    self.transition(to: .recoveryFailed, message: "未解除托管：" + reason + "。请从菜单重试；实体空格正常可用。")
-                    return
-                }
                 self.resumeGuardingAfterAuthentication(
                     message: "未解除托管：\(reason)"
                 )
@@ -260,7 +279,7 @@ final class GuardController {
 
     @discardableResult
     func setDisplayMode(_ newMode: DisplayMode) -> String? {
-        guard state != .authenticating else {
+        guard state != .authenticating && state != .restoringInput else {
             return "身份验证期间不能切换显示状态。"
         }
         if state == .recoveryFailed && newMode == .managedBlackout {
@@ -307,19 +326,33 @@ final class GuardController {
     }
 
     private func resumeGuardingAfterAuthentication(message: String) {
+        pendingResumeMessage = message
+        resumptionStartedAt = monotonicNow()
+        transition(to: .restoringInput, message: "认证已结束，正在恢复输入拦截；鼠标操作仍受限制。")
+        completeInputResumptionIfReady()
+    }
+
+    private func completeInputResumptionIfReady() {
+        guard let message = pendingResumeMessage else { return }
         let secure = secureInputStatus()
-        guard !secure.enabled else {
-            enterRecoveryFailure(secure.blockingMessage)
+        let tapReady = installInputBlocker()
+        guard !secure.enabled && tapReady else {
+            if state == .restoringInput, monotonicNow() - (resumptionStartedAt ?? monotonicNow()) >= 3 {
+                transition(to: .recoveryFailed,
+                    message: "认证已结束，但输入保护尚未恢复；继续限制鼠标操作并自动重试。可按实体空格或从状态栏重试验证。")
+            }
             return
         }
-        guard installInputBlocker() else {
-            handleInputFailure()
-            return
-        }
-        if let error = applyConfiguredDisplayMode() {
+        // Installation can run callbacks: never black out before the final check.
+        guard !secureInputStatus().enabled else { return }
+        if let error = restoreDisplays() ?? applyConfiguredDisplayMode() {
+            pendingResumeMessage = nil
+            resumptionStartedAt = nil
             enterRecoveryFailure(error)
             return
         }
+        pendingResumeMessage = nil
+        resumptionStartedAt = nil
         transition(to: .guarding, message: message)
     }
 
@@ -332,6 +365,7 @@ final class GuardController {
             }
         }
         logger.notice("Guard transition: \(String(describing: self.state), privacy: .public) -> \(String(describing: newState), privacy: .public)")
+        inputBlocker.setState(newState)
         var finalMessage = message
         let keyboardError = newState == .guarding ? keyboardBacklight.turnOff() : keyboardBacklight.restore()
         if newState == .guarding, let keyboardError {

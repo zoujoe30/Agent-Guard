@@ -148,6 +148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateUI(for state: GuardState) {
+        if let button = statusItem.button, let window = button.window, let primary = NSScreen.screens.first {
+            let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
+            guardController.setRecoveryMenuRegion(CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
+                                                         width: frame.width, height: frame.height))
+        }
         let mode = guardController.displayMode == .visible ? "常亮" : "黑屏"
         let explanation: String
         switch state {
@@ -155,6 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             explanation = "未托管，下次托管显示：\(mode)。右 Command＋G＋S 切换偏好。"
         case .guarding:
             explanation = "正在托管，显示模式：\(mode)。按实体空格键验证解除。"
+        case .restoringInput:
+            explanation = "认证已结束，正在恢复输入拦截；鼠标操作继续受限。"
         case .authenticating:
             explanation = "正在验证解除，显示恢复中或已恢复；托管显示偏好：\(mode)。"
         case .recoveryFailed:
@@ -176,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guardController.displayMode == .visible ? .on : .off
         managedBlackoutMenuItem.state =
             guardController.displayMode == .managedBlackout ? .on : .off
-        authenticateMenuItem.isHidden = state != .guarding && state != .recoveryFailed
+        authenticateMenuItem.isHidden = state != .guarding && state != .recoveryFailed && state != .restoringInput
         retryDisplayMenuItem.isEnabled = state == .inactive || state == .recoveryFailed
 
         switch state {
@@ -195,6 +202,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 systemSymbolName: "lock.shield.fill",
                 accessibilityDescription: "Agent Guard 托管中"
             )
+        case .restoringInput:
+            toggleMenuItem.view = nil
+            toggleMenuItem.title = "正在恢复输入拦截"
+            toggleMenuItem.isEnabled = false
+            statusItem.button?.image = NSImage(systemSymbolName: "exclamationmark.shield", accessibilityDescription: "正在恢复输入拦截")
         case .authenticating:
             toggleMenuItem.view = nil
             toggleMenuItem.title = "正在验证"

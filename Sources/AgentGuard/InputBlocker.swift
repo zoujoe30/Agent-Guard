@@ -9,6 +9,11 @@ final class InputBlocker: EventTapDriver {
     typealias SpaceHandler = @MainActor () -> Void
     typealias ActivationShortcutHandler = @MainActor () -> Void
 
+    private let inputScope = AuthenticationInputScope()
+    var recoveryMenuRegion: CGRect? {
+        get { inputScope.recoveryMenuRegion }
+        set { inputScope.recoveryMenuRegion = newValue }
+    }
     private(set) var state: GuardState = .inactive
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -77,7 +82,8 @@ final class InputBlocker: EventTapDriver {
         let opaqueSelf = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
+            // The annotated stage supplies the actual target window for scope checks.
+            tap: .cgAnnotatedSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
@@ -97,7 +103,7 @@ final class InputBlocker: EventTapDriver {
 
         eventTap = tap
         runLoopSource = source
-        logger.notice("Input tap created")
+        logger.notice("Input tap created at annotated session stage")
         return true
     }
 
@@ -107,6 +113,8 @@ final class InputBlocker: EventTapDriver {
             shortcutGeneration &+= 1
         }
         self.state = state
+        inputScope.setMode(authenticating: state == .authenticating,
+                           recovering: state == .recoveryFailed || state == .restoringInput)
     }
 
     private nonisolated static let eventTapCallback: CGEventTapCallBack = {
@@ -132,8 +140,14 @@ final class InputBlocker: EventTapDriver {
         }
 
         let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
+        let targetValue = event.getIntegerValueField(.eventTargetUnixProcessID)
+        let targetPID = targetValue > 0 && targetValue <= Int64(Int32.max) ? Int32(targetValue) : 0
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        let pointerLocation = event.location
+        let handlingWindow = event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent)
+        let pointedWindow = handlingWindow // unknown receiving window is never a rectangle-only fallback
+        let pointerWindowID = pointedWindow > 0 && pointedWindow <= Int64(UInt32.max) ? UInt32(pointedWindow) : 0
         let flags = event.flags
         let otherModifierMask: CGEventFlags = [
             .maskShift,
@@ -150,7 +164,10 @@ final class InputBlocker: EventTapDriver {
                 keyCode: keyCode,
                 isRepeat: isRepeat,
                 modifierFlagsRawValue: flags.rawValue,
-                hasOtherModifiers: hasOtherModifiers
+                hasOtherModifiers: hasOtherModifiers,
+                pointerLocation: pointerLocation,
+                pointerWindowID: pointerWindowID,
+                targetPID: targetPID
             )
         }
         return shouldDrop ? nil : Unmanaged.passUnretained(event)
@@ -162,7 +179,10 @@ final class InputBlocker: EventTapDriver {
         keyCode: Int64,
         isRepeat: Bool,
         modifierFlagsRawValue: UInt64,
-        hasOtherModifiers: Bool
+        hasOtherModifiers: Bool,
+        pointerLocation: CGPoint = .zero,
+        pointerWindowID: UInt32 = 0,
+        targetPID: Int32 = 0
     ) -> Bool {
         let isRightCommandPressed = ActivationShortcutMatcher.isRightCommandPressed(
             modifierFlagsRawValue: modifierFlagsRawValue
@@ -226,11 +246,18 @@ final class InputBlocker: EventTapDriver {
             }
             return false
 
-        case .recoveryFailed:
-            // Recovery faults must leave the user's entire keyboard usable,
-            // including Space and shortcuts. Retry recovery through the menu;
-            // Agent-generated input remains paused until recovery succeeds.
-            return !EventOriginClassifier.isPhysical(sourcePID: sourcePID)
+        case .recoveryFailed, .restoringInput:
+            guard physical else { return true }
+            if type == .keyDown, keyCode == Self.spaceKeyCode, !isRepeat {
+                let expectedGeneration = shortcutGeneration
+                Task { @MainActor [weak self] in
+                    guard let self, self.shortcutGeneration == expectedGeneration,
+                          self.state == .recoveryFailed || self.state == .restoringInput else { return }
+                    self.spaceHandler?()
+                }
+            }
+            if type == .keyDown || type == .keyUp || type == .flagsChanged { return true }
+            return !inputScope.allowsPointer(at: pointerLocation, type: type, authenticating: false, windowID: pointerWindowID)
 
         case .guarding:
             guard EventOriginClassifier.isPhysical(sourcePID: sourcePID) else {
@@ -238,16 +265,21 @@ final class InputBlocker: EventTapDriver {
             }
 
             if type == .keyDown, keyCode == Self.spaceKeyCode, !isRepeat {
+                let expectedGeneration = shortcutGeneration
                 Task { @MainActor [weak self] in
-                    self?.spaceHandler?()
+                    guard let self, self.state == .guarding,
+                          self.shortcutGeneration == expectedGeneration else { return }
+                    self.spaceHandler?()
                 }
             }
             return true
 
         case .authenticating:
-            // Pause Agent-generated GUI input. Physical input is delivered to
-            // the frontmost system authentication panel for password fallback.
-            return !EventOriginClassifier.isPhysical(sourcePID: sourcePID)
+            guard physical else { return true }
+            if type == .keyDown || type == .keyUp || type == .flagsChanged {
+                return !inputScope.allowsKeyboard(targetPID: targetPID)
+            }
+            return !inputScope.allowsPointer(at: pointerLocation, type: type, authenticating: true, windowID: pointerWindowID)
         }
     }
 
