@@ -126,6 +126,38 @@ import Sparkle
         controller.showInstallingUpdate(withApplicationTerminated: true) { retries += 100 }
         SPUStandardUserDriver.retryTermination!()
         check(retries == 1, "already terminated application never receives retry")
+        begin()
+        controller.showUpdateFound(with: item, state: SPUUserUpdateState(stage: .notDownloaded)) { _ in }
+        check(SPUStandardUserDriver.standardDelegate?.supportsGentleScheduledUpdateReminders == true,
+              "standard UI receives real gentle reminder delegate")
+        check(controller.discoveredVersion == "9.9", "scheduled discovery publishes a persistent version reminder")
+        updater.canCheckForUpdates = false
+        check(!controller.canCheck && controller.canShowUpdate,
+              "existing reminder stays actionable when canCheckForUpdates is false")
+        let focusBefore = updater.checkInvocations
+        controller.checkForUpdates()
+        check(updater.checkInvocations == focusBefore + 1, "reminder action focuses existing Sparkle session")
+        state = .guarding
+        check(controller.discoveredVersion != nil && !controller.canShowUpdate,
+              "guarding keeps reminder visible but disables action")
+        controller.checkForUpdates()
+        check(updater.checkInvocations == focusBefore + 1, "guarding never forwards reminder click to updater")
+        state = .authenticating
+        check(controller.discoveredVersion != nil && !controller.canShowUpdate,
+              "authentication keeps reminder visible but disables action")
+        state = .inactive
+        displayRecovery = true
+        check(!controller.canShowUpdate, "recovery journal disables reminder action")
+        displayRecovery = false
+        SPUStandardUserDriver.standardDelegate?.standardUserDriverDidReceiveUserAttention(forUpdate: item)
+        check(controller.discoveredVersion == nil, "user attention clears reminder")
+        SPUStandardUserDriver.standardDelegate?.standardUserDriverWillHandleShowingUpdate(true, forUpdate: item,
+            state: SPUUserUpdateState(stage: .notDownloaded))
+        check(controller.discoveredVersion != nil, "new scheduled reminder can be published")
+        SPUStandardUserDriver.standardDelegate?.standardUserDriverWillFinishUpdateSession()
+        check(controller.discoveredVersion == nil, "UI session completion clears reminder")
+        updater.canCheckForUpdates = true
+        finishError()
         print("SUCCESS: \(checks) assertions exercise real SparkleUpdateController against a non-UI Sparkle module stub")
     }
 }

@@ -4,10 +4,10 @@ import Sparkle
 /// All install replies pass through the same main-actor lease as guard activation.
 /// Keep Sparkle's standard UI, signature verification, download and installer.
 @MainActor
-final class SparkleUpdateController: NSObject, SPUUpdaterDelegate, SPUUserDriver {
+final class SparkleUpdateController: NSObject, SPUUpdaterDelegate, SPUUserDriver, @preconcurrency SPUStandardUserDriverDelegate {
     private let gate: UpdateInstallGate
     private let safety: () -> UpdateInstallGate.Safety
-    private let standard = SPUStandardUserDriver(hostBundle: .main, delegate: nil)
+    private lazy var standard = SPUStandardUserDriver(hostBundle: .main, delegate: self)
     private var updater: SPUUpdater!
     private var session: UUID?
     private var cancellationRequested = false
@@ -15,9 +15,14 @@ final class SparkleUpdateController: NSObject, SPUUpdaterDelegate, SPUUserDriver
     private var checkObservation: NSKeyValueObservation?
     var onChange: (() -> Void)?
     private(set) var startupError: String?
+    private(set) var discoveredVersion: String?
     var blocksActivation: Bool { gate.blocksActivation }
     var hasDeferredInstall: Bool { gate.hasDeferredInstall }
     var canCheck: Bool { updater?.canCheckForUpdates == true && safety().permitsInstallation && !blocksActivation }
+    var canShowUpdate: Bool {
+        safety().permitsInstallation && !blocksActivation
+            && (updater?.canCheckForUpdates == true || discoveredVersion != nil)
+    }
     var automaticallyChecks: Bool { updater?.automaticallyChecksForUpdates == true }
     var permitsTermination: Bool {
         if let session, blocksActivation { return gate.permitsTermination(session: session) }
@@ -38,7 +43,27 @@ final class SparkleUpdateController: NSObject, SPUUpdaterDelegate, SPUUserDriver
         do { try updater.start() } catch { startupError = error.localizedDescription }
         onChange?()
     }
-    func checkForUpdates() { if canCheck { updater.checkForUpdates() } }
+    func checkForUpdates() {
+        // Sparkle also uses this API to focus an already-presented update. Its
+        // canCheckForUpdates flag alone can be false while that UI is waiting.
+        if canShowUpdate { updater.checkForUpdates() }
+    }
+
+    var supportsGentleScheduledUpdateReminders: Bool { true }
+    func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
+        discoveredVersion = update.displayVersionString
+        onChange?()
+    }
+    func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+        discoveredVersion = nil
+        onChange?()
+    }
+    func standardUserDriverWillFinishUpdateSession() {
+        // This is an attention/UI lifecycle event, not proof an installer stopped.
+        discoveredVersion = nil
+        onChange?()
+    }
     func toggleAutomaticChecks() {
         updater.automaticallyChecksForUpdates.toggle()
         onChange?()
@@ -75,6 +100,7 @@ final class SparkleUpdateController: NSObject, SPUUpdaterDelegate, SPUUserDriver
     private func finishSession() {
         if let session { gate.finish(session: session) }
         session = nil
+        discoveredVersion = nil
         cancellationRequested = false
         answeredRequests.removeAll()
         onChange?()

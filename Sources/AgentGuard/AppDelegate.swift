@@ -204,11 +204,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             explanation = "显示或输入恢复异常，请打开菜单查看详情；托管显示偏好：\(mode)。"
         }
         if let button = statusItem.button {
-            button.title = ""
-            button.imagePosition = .imageOnly
+            let reminder = updates.discoveredVersion.map { "发现新版 \($0)，点击菜单查看" }
+            button.title = reminder == nil ? "" : "•"
+            button.imagePosition = reminder == nil ? .imageOnly : .imageLeading
             button.toolTip = "Agent Guard：" + explanation
                 + (lastMessage.map { "\n" + $0 } ?? "")
-            button.setAccessibilityLabel("Agent Guard：" + explanation)
+                + (reminder.map { "\n" + $0 } ?? "")
+            button.setAccessibilityLabel("Agent Guard：" + explanation + (reminder.map { "；" + $0 } ?? ""))
         }
         let detail = lastMessage.map { "｜\($0)" } ?? ""
         statusMenuItem.title = "状态：\(state.statusText)\(detail)"
@@ -260,7 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 accessibilityDescription: "Agent Guard 托管恢复异常"
             )
         }
-        checkUpdatesItem.isEnabled = updates.canCheck
+        checkUpdatesItem.title = updates.discoveredVersion.map { "发现新版 \($0)…点击查看" } ?? "检查更新…"
+        // Keep the reminder visible while guarding; only its action is disabled.
+        checkUpdatesItem.isEnabled = updates.canShowUpdate
         automaticUpdatesItem.state = updates.automaticallyChecks ? .on : .off
         updateStatusItem.title = updates.startupError.map { "更新不可用：" + $0 }
             ?? (updates.hasDeferredInstall ? "更新已等待：解除托管并恢复设备后继续" :

@@ -11,8 +11,8 @@ Agent Guard 固定使用 Sparkle 2.10.1。`build-app.sh` 从 SwiftPM 二进制�
 ```sh
 python3 Tools/prepare-sparkle-update.py \
   --zip '/absolute/output/Agent.Guard-0.3.21.zip' \
-  --version 0.3.21 --build 32 \
-  --download-url 'https://github.com/zoujoe30/Agent-Guard/releases/download/local-0.3.21-build32/Agent.Guard-0.3.21.zip' \
+  --version 0.3.21 --build 33 \
+  --download-url 'https://github.com/zoujoe30/Agent-Guard/releases/download/local-0.3.21-build33/Agent.Guard-0.3.21.zip' \
   --sign-update '/absolute/Sparkle-2.10.1/bin/sign_update' \
   --keychain-account com.local.agentguard.sparkle \
   --output-dir '/absolute/output/updates'
