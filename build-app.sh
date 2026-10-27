@@ -87,8 +87,19 @@ binary_dir="$(swift build "${build_args[@]}" --show-bin-path)"
 binary_path="$binary_dir/AgentGuard"
 cli_binary_path="$binary_dir/agent-guard"
 
+# SwiftPM's binary artifact contains the signed, versioned framework. Do not
+# flatten its symlinks or use the build-products copy of individual dylibs.
+sparkle_frameworks=("$scratch_dir/swift"/artifacts/**/Sparkle.framework(N/))
+if (( ${#sparkle_frameworks} != 1 )); then
+  echo "expected exactly one Sparkle.framework in SwiftPM artifacts" >&2
+  exit 2
+fi
+
 mkdir -p "$temporary_app/Contents/MacOS"
 mkdir -p "$temporary_app/Contents/Resources"
+mkdir -p "$temporary_app/Contents/Frameworks"
+/usr/bin/ditto "${sparkle_frameworks[1]}" "$temporary_app/Contents/Frameworks/Sparkle.framework"
+cp "$project_dir/ThirdParty/Sparkle-LICENSE.txt" "$temporary_app/Contents/Resources/Sparkle-LICENSE.txt"
 cp "$binary_path" "$temporary_app/Contents/MacOS/AgentGuard"
 cp "$cli_binary_path" "$temporary_app/Contents/MacOS/agent-guard"
 cp "$project_dir/AppInfo.plist" "$temporary_app/Contents/Info.plist"
@@ -98,13 +109,29 @@ chmod 755 \
   "$temporary_app/Contents/MacOS/agent-guard"
 
 xattr -cr "$temporary_app"
-codesign \
-  "${codesign_args[@]}" \
-  "$temporary_app/Contents/MacOS/agent-guard"
-codesign \
-  --deep \
-  "${codesign_args[@]}" \
-  "$temporary_app"
+embedded_framework="$temporary_app/Contents/Frameworks/Sparkle.framework"
+if [[ ! -L "$embedded_framework/Versions/Current" || ! -x "$embedded_framework/Sparkle" ]]; then
+  echo "embedded Sparkle framework structure is invalid" >&2
+  exit 2
+fi
+/usr/bin/otool -L "$temporary_app/Contents/MacOS/AgentGuard" \
+  | /usr/bin/grep -Fq '@rpath/Sparkle.framework/Versions/B/Sparkle'
+/usr/bin/otool -l "$temporary_app/Contents/MacOS/AgentGuard" \
+  | /usr/bin/grep -Eq '@(executable|loader)_path/../Frameworks'
+
+# Sign leaves before their containers. --deep is intentionally verification
+# only; it must never conceal missing helper signatures during signing.
+while IFS= read -r -d '' code_file; do
+  if /usr/bin/file -b "$code_file" | /usr/bin/grep -q 'Mach-O'; then
+    codesign "${codesign_args[@]}" --preserve-metadata=entitlements "$code_file"
+  fi
+done < <(/usr/bin/find "$embedded_framework" -type f -print0)
+while IFS= read -r -d '' code_bundle; do
+  codesign "${codesign_args[@]}" --preserve-metadata=entitlements "$code_bundle"
+done < <(/usr/bin/find "$embedded_framework" -depth -type d \( -name '*.xpc' -o -name '*.app' \) -print0)
+codesign "${codesign_args[@]}" "$embedded_framework"
+codesign "${codesign_args[@]}" "$temporary_app/Contents/MacOS/agent-guard"
+codesign "${codesign_args[@]}" "$temporary_app"
 codesign --verify --deep --strict --verbose=2 "$temporary_app"
 
 if [[ "$distribution_build" == 1 ]]; then

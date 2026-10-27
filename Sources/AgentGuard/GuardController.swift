@@ -7,6 +7,9 @@ import OSLog
 @MainActor
 final class GuardController {
     var onStateChange: ((GuardState, String?) -> Void)?
+    var activationAllowed: () -> Bool = { true }
+    private(set) var activationInProgress = false
+    private var lastPublishedMessage: String?
 
     private let inputBlocker = InputBlocker()
     private let authenticator = AuthenticationController()
@@ -40,6 +43,24 @@ final class GuardController {
         self.defaults = defaults
         let storedMode = defaults.string(forKey: DefaultsKey.displayMode)
         displayMode = DisplayMode(rawValue: storedMode ?? "") ?? .visible
+    }
+
+    var installationSafety: UpdateInstallGate.Safety {
+        UpdateInstallGate.Safety(state: state,
+            displayJournalActive: Self.recoveryJournalActive(at: DisplayRecoveryJournal.defaultURL),
+            keyboardJournalActive: Self.recoveryJournalActive(at: KeyboardBacklightController.journalURL),
+            activationInProgress: activationInProgress)
+    }
+
+    private static func recoveryJournalActive(at url: URL) -> Bool {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return true
+        } catch let error as NSError {
+            // Permission/IO failures are unknown, never evidence of no recovery.
+            return error.domain != NSCocoaErrorDomain
+                || (error.code != NSFileNoSuchFileError && error.code != NSFileReadNoSuchFileError)
+        }
     }
 
     var powerStatusText: String {
@@ -88,7 +109,7 @@ final class GuardController {
         let keyboardError = keyboardBacklight.restore()
         let errors = [displayError, keyboardError].compactMap { $0 }
         let error = errors.isEmpty ? nil : errors.joined(separator: " ")
-        onStateChange?(state, error.map { "显示恢复待完成：" + $0 } ?? "显示恢复已完成。")
+        publishStateChange(state, error.map { "显示恢复待完成：" + $0 } ?? "显示恢复已完成。")
     }
 
     func setRecoveryMenuRegion(_ rect: CGRect?) {
@@ -98,20 +119,31 @@ final class GuardController {
     func prepareActivationShortcut() {
         guard requestPermissions(showPrompt: false) else { return }
         if !installInputBlocker() {
-            onStateChange?(state, "输入监听未就绪，快捷键不可用。请重新打开应用。")
+            publishStateChange(state, "输入监听未就绪，快捷键不可用。请重新打开应用。")
         }
     }
 
     func activate() {
-        guard state == .inactive else { return }
+        guard state == .inactive, !activationInProgress else { return }
+        activationInProgress = true
+        defer {
+            activationInProgress = false
+            // A failed/aborted activation may never transition state. Let the
+            // updater retry its deferred handler after the transaction ends.
+            publishStateChange(state, lastPublishedMessage)
+        }
+        guard activationAllowed() else {
+            publishStateChange(state, "正在安装更新，暂时不能开启托管。")
+            return
+        }
         let secure = secureInputStatus()
         guard !secure.enabled else {
             logger.error("Guard activation refused: Secure Input enabled")
-            onStateChange?(state, secure.blockingMessage + " 未进入托管。")
+            publishStateChange(state, secure.blockingMessage + " 未进入托管。")
             return
         }
         guard requestPermissions(showPrompt: true) else {
-            onStateChange?(
+            publishStateChange(
                 state,
                 "需要在“系统设置 → 隐私与安全性”中允许辅助功能和输入监控，然后重新打开应用。"
             )
@@ -120,7 +152,7 @@ final class GuardController {
 
         let installed = installInputBlocker()
         guard installed else {
-            onStateChange?(
+            publishStateChange(
                 state,
                 "输入监听未通过有效性检查，未进入托管。请检查辅助功能和输入监控权限，或重新打开应用。"
             )
@@ -130,12 +162,16 @@ final class GuardController {
         // Permissions/recovery may run UI callbacks; recheck before power/display side effects.
         let ready = secureInputStatus()
         guard !ready.enabled else {
-            onStateChange?(state, ready.blockingMessage + " 未进入托管。")
+            publishStateChange(state, ready.blockingMessage + " 未进入托管。")
             return
         }
 
+        guard activationAllowed() else {
+            publishStateChange(state, "正在安装更新，暂时不能开启托管。")
+            return
+        }
         if let error = restoreDisplays() {
-            onStateChange?(state, error)
+            publishStateChange(state, error)
             return
         }
         let powerPolicy = PowerPolicy(
@@ -143,15 +179,21 @@ final class GuardController {
             keepDisplayAwake: true
         )
         if let error = powerController.apply(powerPolicy) {
-            onStateChange?(state, error)
+            publishStateChange(state, error)
             return
         }
         if let error = applyConfiguredDisplayMode() {
             powerController.release()
-            onStateChange?(state, error)
+            publishStateChange(state, error)
             return
         }
 
+        guard activationAllowed() else {
+            deactivate() // undo display, keyboard and power effects before yielding
+            let recoveryWarning = lastPublishedMessage
+            publishStateChange(state, ["正在安装更新，未进入托管。", recoveryWarning].compactMap { $0 }.joined(separator: " "))
+            return
+        }
         transition(to: .guarding)
     }
 
@@ -248,7 +290,7 @@ final class GuardController {
         let displayError = restoreDisplays()
         if let displayError {
             logger.error("Authentication continuing with pending display recovery: \(displayError, privacy: .public)")
-            onStateChange?(.authenticating, "显示恢复待完成，仍可验证解除：" + displayError)
+            publishStateChange(.authenticating, "显示恢复待完成，仍可验证解除：" + displayError)
         }
         NSApp.activate(ignoringOtherApps: true)
 
@@ -310,7 +352,7 @@ final class GuardController {
         }
 
         defaults.set(newMode.rawValue, forKey: DefaultsKey.displayMode)
-        onStateChange?(state, displayRecoveryError.map { "显示恢复待完成：" + $0 })
+        publishStateChange(state, displayRecoveryError.map { "显示恢复待完成：" + $0 })
         return nil
     }
 
@@ -386,7 +428,12 @@ final class GuardController {
         state = newState
         inputBlocker.setState(newState)
         updateHealthMonitoring()
-        onStateChange?(newState, finalMessage)
+        publishStateChange(newState, finalMessage)
+    }
+
+    private func publishStateChange(_ state: GuardState, _ message: String?) {
+        lastPublishedMessage = message
+        onStateChange?(state, message)
     }
 
     private enum DefaultsKey {

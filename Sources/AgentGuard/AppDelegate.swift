@@ -6,6 +6,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var controlServer = ControlServer(
         guardController: guardController
     )
+    private lazy var updates = SparkleUpdateController { [weak self] in
+        self?.guardController.installationSafety ?? .init(state: .recoveryFailed, displayJournalActive: true, keyboardJournalActive: true)
+    }
+    private var checkUpdatesItem: NSMenuItem!
+    private var automaticUpdatesItem: NSMenuItem!
+    private var updateStatusItem: NSMenuItem!
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
     private var powerStatusMenuItem: NSMenuItem!
@@ -20,8 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
+        guardController.activationAllowed = { [weak self] in self?.updates.blocksActivation == false }
+        updates.onChange = { [weak self] in
+            guard let self else { return }
+            self.updateUI(for: self.guardController.state)
+        }
         guardController.onStateChange = { [weak self] state, message in
             self?.lastMessage = message
+            self?.updates.guardStateDidChange()
             self?.updateUI(for: state)
             if let message, state == .inactive {
                 self?.showNotification(message)
@@ -34,7 +46,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let error = controlServer.start() {
             lastMessage = error
         }
+        updates.start()
         updateUI(for: guardController.state)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Sparkle can install on app exit after a download has been prepared.
+        // Never allow that exit while input/hardware protection is active.
+        guard updates.permitsTermination else {
+            if guardController.state == .guarding || guardController.state == .recoveryFailed {
+                guardController.beginAuthentication()
+            }
+            return .terminateCancel
+        }
+        return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -136,6 +161,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        checkUpdatesItem = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+        checkUpdatesItem.target = self
+        menu.addItem(checkUpdatesItem)
+        automaticUpdatesItem = NSMenuItem(title: "自动检查新版", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
+        automaticUpdatesItem.target = self
+        menu.addItem(automaticUpdatesItem)
+        updateStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        updateStatusItem.isEnabled = false
+        menu.addItem(updateStatusItem)
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(
             title: "退出 Agent Guard",
             action: #selector(quit),
@@ -224,6 +260,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 accessibilityDescription: "Agent Guard 托管恢复异常"
             )
         }
+        checkUpdatesItem.isEnabled = updates.canCheck
+        automaticUpdatesItem.state = updates.automaticallyChecks ? .on : .off
+        updateStatusItem.title = updates.startupError.map { "更新不可用：" + $0 }
+            ?? (updates.hasDeferredInstall ? "更新已等待：解除托管并恢复设备后继续" :
+                updates.blocksActivation ? "正在更新，暂时无法进入托管" :
+                state != .inactive ? "托管或认证期间暂停更新" : "")
+        updateStatusItem.isHidden = updateStatusItem.title.isEmpty
+        if updates.blocksActivation && state == .inactive {
+            toggleMenuItem.view = nil
+            toggleMenuItem.title = "正在更新，暂时无法进入托管"
+            toggleMenuItem.isEnabled = false
+        }
         // Normal states encode the display preference inside the shield.
         // Authentication and recovery faults retain their dedicated symbols.
         if state == .inactive || state == .guarding {
@@ -293,6 +341,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 : "权限尚未完整授予。请检查“辅助功能”和“输入监控”。"
         )
     }
+
+    @objc private func checkForUpdates() { updates.checkForUpdates() }
+    @objc private func toggleAutomaticUpdates() { updates.toggleAutomaticChecks() }
 
     @objc private func quit() {
         NSApp.terminate(nil)

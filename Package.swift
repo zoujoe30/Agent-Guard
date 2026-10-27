@@ -13,14 +13,19 @@ let package = Package(
         .executable(name: "AgentGuardSelfTest", targets: ["AgentGuardSelfTest"])
     ],
     targets: [
+        // Official Sparkle 2.10.1 SPM artifact and checksum from its Package.swift.
+        .binaryTarget(name: "Sparkle",
+            url: "https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-for-Swift-Package-Manager.zip",
+            checksum: "4c2e48a3e50ebcc2c88a58a4c7264a1a99c3c31857ce754357afb9cdb323022a"),
         .target(
             name: "AgentGuardCore",
             path: "Sources/AgentGuardCore"
         ),
         .executableTarget(
             name: "AgentGuard",
-            dependencies: ["AgentGuardCore"],
-            path: "Sources/AgentGuard"
+            dependencies: ["AgentGuardCore", "Sparkle"],
+            path: "Sources/AgentGuard",
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
         ),
         .executableTarget(
             name: "AgentGuardCLI",

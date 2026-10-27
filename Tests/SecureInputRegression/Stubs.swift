@@ -56,7 +56,14 @@ import AgentGuardCore
     func restoreDisplays() -> String? { Self.restoreCount += 1; return Self.restoreFailure }
 }
 
+@MainActor final class DisplayRecoveryJournal {
+    static let defaultURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("agentguard-display-test-" + UUID().uuidString + "/record.json")
+}
+
 @MainActor final class KeyboardBacklightController {
+    static let journalURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("agentguard-keyboard-test-" + UUID().uuidString + "/record.json")
     static var offError: String?
     static var offCount = 0
     static var restoreCount = 0

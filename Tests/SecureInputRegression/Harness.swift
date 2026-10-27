@@ -241,6 +241,50 @@ import AgentGuardCore
         teardownSecure = false
         teardown.checkInputHealth()
         check(teardown.state == .inactive, "deactivation cancels pending automatic resumption")
+        keyboardTest.deactivate()
+        let updateTest = GuardController(defaults: defaults, secureInputStatus: {
+            SecureInputStatus(enabled: false, ownerPID: nil, ownerName: nil)
+        }, monitorHealth: false, permissionCheck: { _ in true })
+        var allowActivation = false
+        var transactionObserved = false
+        var transactionEnded = false
+        updateTest.activationAllowed = {
+            transactionObserved = updateTest.activationInProgress
+            return allowActivation
+        }
+        updateTest.onStateChange = { _, _ in
+            if !updateTest.activationInProgress { transactionEnded = true }
+        }
+        let updatePowerBefore = PowerAssertionController.applyCount
+        updateTest.activate()
+        check(transactionObserved, "update admission check occurs inside activation transaction")
+        check(updateTest.state == .inactive && PowerAssertionController.applyCount == updatePowerBefore,
+              "update lock rejects activation before power effects")
+        check(!updateTest.activationInProgress && transactionEnded,
+              "rejected activation clears transaction and notifies observers")
+        allowActivation = true
+        PowerAssertionController.onApply = { allowActivation = false }
+        let updateRestoreBefore = DisplayBlackoutController.restoreCount
+        updateTest.activate()
+        check(updateTest.state == .inactive && !updateTest.activationInProgress,
+              "late installation lock prevents guarding commit")
+        check(DisplayBlackoutController.restoreCount > updateRestoreBefore,
+              "late installation lock rolls back display effects")
+        PowerAssertionController.onApply = nil
+        check(updateTest.installationSafety.permitsInstallation,
+              "clean inactive transaction is safe for installation")
+        let testJournals = [DisplayRecoveryJournal.defaultURL, KeyboardBacklightController.journalURL]
+        for (index, journal) in testJournals.enumerated() {
+            try! FileManager.default.createDirectory(at: journal.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try! Data("pending recovery".utf8).write(to: journal)
+            check(!updateTest.installationSafety.permitsInstallation, "real journal existence blocks installation index=\(index)")
+            try! FileManager.default.removeItem(at: journal.deletingLastPathComponent())
+        }
+        allowActivation = true
+        updateTest.activate()
+        check(updateTest.state == .guarding && !updateTest.installationSafety.permitsInstallation,
+              "guarding never presents installation-safe snapshot")
+        updateTest.deactivate()
         print("SUCCESS: \(checks) regression assertions; no physical input, display or authentication operations")
     }
 }

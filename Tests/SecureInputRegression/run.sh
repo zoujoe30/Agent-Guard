@@ -4,7 +4,7 @@ cd "${0:A:h}/../.."
 build=work/secure-input-regression/build
 mkdir -p "$build"
 swiftc -swift-version 6 -emit-library -emit-module -module-name AgentGuardCore Sources/AgentGuardCore/*.swift -o "$build/libAgentGuardCore.dylib" -emit-module-path "$build/AgentGuardCore.swiftmodule"
-swiftc -swift-version 6 -I "$build" -L "$build" -lAgentGuardCore -Xlinker -rpath -Xlinker "${PWD}/$build" Sources/AgentGuard/GuardController.swift Sources/AgentGuard/GuardState.swift Sources/AgentGuard/SecureInputStatus.swift Tests/SecureInputRegression/Stubs.swift Tests/SecureInputRegression/Harness.swift -o "$build/regression"
+swiftc -swift-version 6 -I "$build" -L "$build" -lAgentGuardCore -Xlinker -rpath -Xlinker "${PWD}/$build" Sources/AgentGuard/GuardController.swift Sources/AgentGuard/UpdateInstallGate.swift Sources/AgentGuard/GuardState.swift Sources/AgentGuard/SecureInputStatus.swift Tests/SecureInputRegression/Stubs.swift Tests/SecureInputRegression/Harness.swift -o "$build/regression"
 "$build/regression"
 # Test the actual policy with only private access relaxed in a scratch copy.
 python3 - <<'PY'

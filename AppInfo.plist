@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.20</string>
+	<string>0.3.21</string>
 	<key>CFBundleVersion</key>
-	<string>31</string>
+	<string>32</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -30,5 +30,21 @@
 	<true/>
 	<key>NSInputMonitoringUsageDescription</key>
 	<string>用于阻止实体键盘、鼠标和触控板输入，同时允许 Agent 继续操作。</string>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/zoujoe30/Agent-Guard/main/updates/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>PhsomVwq3C7k4M3/FnytiRhs2SEsrZv7DluZEFtME+4=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SURequireSignedFeed</key>
+	<true/>
 </dict>
 </plist>

@@ -32,6 +32,18 @@ trap cleanup EXIT
 xattr -cr "$app_bundle"
 /usr/bin/plutil -lint "$app_bundle/Contents/Info.plist"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_bundle"
+framework="$app_bundle/Contents/Frameworks/Sparkle.framework"
+[[ -L "$framework/Versions/Current" && -x "$framework/Sparkle" ]]
+[[ -s "$app_bundle/Contents/Resources/Sparkle-LICENSE.txt" ]]
+/usr/bin/otool -L "$app_binary" | /usr/bin/grep -Fq '@rpath/Sparkle.framework/Versions/B/Sparkle'
+/usr/bin/codesign --verify --strict "$framework"
+for helper in \
+  "$framework/Versions/B/Autoupdate" \
+  "$framework/Versions/B/Updater.app" \
+  "$framework/Versions/B/XPCServices/Downloader.xpc" \
+  "$framework/Versions/B/XPCServices/Installer.xpc"; do
+  /usr/bin/codesign --verify --strict "$helper"
+done
 /usr/bin/open -g "$app_bundle"
 
 for _ in {1..5}; do

@@ -93,8 +93,10 @@ if [[ -n "$installer_identity" ]]; then
   /usr/sbin/pkgutil --check-signature "$package_path"
 fi
 
-if ! /usr/sbin/pkgutil --payload-files "$package_path" \
-  | /usr/bin/grep -Fq './Agent Guard.app/Contents/MacOS/AgentGuard'; then
+# Materialize the listing before matching: grep -q can close the pipe early
+# and make pkgutil fail with SIGPIPE under pipefail for large frameworks.
+/usr/sbin/pkgutil --payload-files "$package_path" > "$scratch_dir/payload-files.txt"
+if ! /usr/bin/grep -Fxq './Agent Guard.app/Contents/MacOS/AgentGuard' "$scratch_dir/payload-files.txt"; then
   echo "package payload is missing Agent Guard.app" >&2
   exit 3
 fi
