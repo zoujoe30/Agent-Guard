@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Agent Guard Updates</title>
+    <link>https://github.com/zoujoe30/Agent-Guard</link>
+    <description>Agent Guard signed application updates</description>
+    <item>
+      <title>Agent Guard 0.3.21</title>
+      <pubDate>Tue, 27 Oct 2026 10:37:23 +0000</pubDate>
+      <sparkle:version>32</sparkle:version>
+      <sparkle:shortVersionString>0.3.21</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/zoujoe30/Agent-Guard/releases/download/local-0.3.21-build32/Agent.Guard-0.3.21.zip" length="1322242" type="application/octet-stream" sparkle:edSignature="+WDfwXlA8l7molXDEmMl/OzshY1oIffVfNgmmNhLx/bwYTxcKumr3cuOneym66EXRbwfDu4z/csSsN/2seExAQ=="></enclosure>
+    </item>
+  </channel>
+</rss><!-- sparkle-signatures:
+edSignature: FVcz7PQKNHirTU962ql8pEGHT72hzeOqVg07GV10Xq784bQO6JEXW7rayvHRt3ZDJ4ASlu1bXdDjB4MD+aeSBg==
+length: 1180
+-->
