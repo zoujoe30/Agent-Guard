@@ -12,7 +12,16 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$project_dir"
-swift run --scratch-path "$scratch_dir" AgentGuardSelfTest
+# Build before executing so macOS CI does not launch an executable carrying a
+# toolchain-generated debug/entitlement signature before it can be normalized.
+# This ad-hoc identity is ONLY for the disposable self-test binary, never the app
+# bundle, Sparkle framework, or any release artifact.
+swift build --scratch-path "$scratch_dir" --product AgentGuardSelfTest
+binary_dir="$(swift build --scratch-path "$scratch_dir" --show-bin-path)"
+self_test="$binary_dir/AgentGuardSelfTest"
+/usr/bin/codesign --force --sign - --timestamp=none "$self_test"
+/usr/bin/codesign --verify --strict --verbose=2 "$self_test"
+"$self_test"
 
 "$project_dir/Tests/SecureInputRegression/run.sh"
 
