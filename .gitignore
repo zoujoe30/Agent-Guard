@@ -1,0 +1,28 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+
+# Local build and release outputs
+work/
+Releases/
+*.app/
+*.pkg
+*.dmg
+*.zip
+
+# Signing credentials and local configuration
+*.p12
+*.cer
+*.key
+*.mobileprovision
+*.provisionprofile
+.env
+.env.*
+
+# Machine-specific identities, diagnostics and signing inputs
+*.p8
+*.pfx
+*.keychain*
+*.log
+*.dSYM/

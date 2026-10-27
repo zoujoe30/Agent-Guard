@@ -1,0 +1,112 @@
+name: Signed and notarized release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Validate tag and version
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' AppInfo.plist)"
+          if [[ "$RELEASE_TAG" != "v$version" ]]; then
+            echo "tag $RELEASE_TAG does not match AppInfo.plist version $version" >&2
+            exit 1
+          fi
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
+
+      - name: Run complete tests
+        run: |
+          ./test.sh
+          swift build -c release
+
+      - name: Import Developer ID certificates
+        env:
+          APPLICATION_P12: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 }}
+          APPLICATION_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_PASSWORD }}
+          INSTALLER_P12: ${{ secrets.DEVELOPER_ID_INSTALLER_P12 }}
+          INSTALLER_PASSWORD: ${{ secrets.DEVELOPER_ID_INSTALLER_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.SIGNING_KEYCHAIN_PASSWORD }}
+        run: |
+          keychain_path="$RUNNER_TEMP/agentguard-signing.keychain-db"
+          application_p12="$RUNNER_TEMP/developer-id-application.p12"
+          installer_p12="$RUNNER_TEMP/developer-id-installer.p12"
+
+          printf '%s' "$APPLICATION_P12" | /usr/bin/base64 --decode > "$application_p12"
+          printf '%s' "$INSTALLER_P12" | /usr/bin/base64 --decode > "$installer_p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$application_p12" -k "$keychain_path" -P "$APPLICATION_PASSWORD" -T /usr/bin/codesign
+          security import "$installer_p12" -k "$keychain_path" -P "$INSTALLER_PASSWORD" -T /usr/bin/productsign
+          security list-keychains -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain_path"
+
+          application_identity="$(security find-identity -v "$keychain_path" | awk '/Developer ID Application/ {print $2; exit}')"
+          installer_identity="$(security find-identity -v "$keychain_path" | awk '/Developer ID Installer/ {print $2; exit}')"
+          if [[ -z "$application_identity" || -z "$installer_identity" ]]; then
+            echo "Developer ID identities were not imported" >&2
+            exit 1
+          fi
+
+          {
+            echo "AGENT_GUARD_SIGNING_IDENTITY=$application_identity"
+            echo "AGENT_GUARD_INSTALLER_SIGNING_IDENTITY=$installer_identity"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare App Store Connect API key
+        env:
+          API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          api_key_path="$RUNNER_TEMP/AuthKey_$API_KEY_ID.p8"
+          printf '%s' "$API_PRIVATE_KEY" > "$api_key_path"
+          chmod 600 "$api_key_path"
+          {
+            echo "AGENT_GUARD_NOTARY_KEY_PATH=$api_key_path"
+            echo "AGENT_GUARD_NOTARY_KEY_ID=$API_KEY_ID"
+            echo "AGENT_GUARD_NOTARY_ISSUER_ID=$API_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, and staple
+        run: ./release.sh "$RUNNER_TEMP/release"
+
+      - name: Smoke-test notarized archive
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' AppInfo.plist)"
+          ./smoke-test.sh "$RUNNER_TEMP/release/Agent Guard-$version.zip"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/release/Agent Guard-"* \
+            --verify-tag \
+            --title "Agent Guard ${RELEASE_TAG#v}" \
+            --notes-file RELEASE_NOTES.md
