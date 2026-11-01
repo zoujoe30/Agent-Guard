@@ -111,6 +111,62 @@ import Foundation
         scope.setMode(authenticating: false, recovering: false)
         check(!scope.allowsKeyboard(targetPID: 500), "ending scope clears keyboard permission immediately")
         check(!allow(.leftMouseDown, buttonPoint, auth: false), "ending scope clears pointer permission immediately")
+        // Exercise early routing together with the unchanged final validator.
+        windows = [auth, desktop]; focused = true
+        let early = AuthenticationInputScope(ownerPID: 42, clock: { now }, snapshotProvider: {
+            AuthenticationInputScope.Snapshot(windows: windows, authenticationHasFocus: focused)
+        })
+        early.setMode(authenticating: true, recovering: false)
+        func route(_ type: CGEventType, _ point: CGPoint = CGPoint(x: 120, y: 140),
+                   observed: UInt32 = 0, handling: UInt32 = 0, authMode: Bool = true) -> Bool {
+            early.mayRoutePointer(at: point, type: type, authenticating: authMode,
+                                  observedWindowID: observed, handlingWindowID: handling)
+        }
+        func finish(_ type: CGEventType, _ point: CGPoint = CGPoint(x: 120, y: 140),
+                    id: UInt32 = 1, authMode: Bool = true) -> Bool {
+            early.allowsPointer(at: point, type: type, authenticating: authMode, windowID: id)
+        }
+        check(!route(.leftMouseDown, outside), "early outside authentication click denied")
+        check(!route(.scrollWheel, outside), "early outside authentication scroll denied")
+        check(route(.leftMouseDown), "early trusted candidate permits routing")
+        check(!finish(.leftMouseUp), "candidate routing cannot create final press authorization")
+        check(!finish(.leftMouseDown, id: 0), "early candidate cannot replace unknown final receiving window")
+        check(!finish(.leftMouseDown, id: 2), "early candidate cannot replace mismatched final receiving window")
+        check(!route(.leftMouseDown, observed: 2), "known early pointed window mismatch vetoes candidate")
+        check(!route(.leftMouseDown, handling: 2), "known early handling window mismatch vetoes candidate")
+        check(route(.leftMouseDown, observed: 1, handling: 1), "matching early IDs retain candidate routing")
+        check(finish(.leftMouseDown), "final exact target creates paired press")
+        check(route(.leftMouseUp), "early paired release can reach final validator")
+        check(finish(.leftMouseUp), "early release does not consume final pairing")
+        check(!route(.leftMouseUp), "early unpaired release denied")
+        check(route(.leftMouseDown) && finish(.leftMouseDown), "press before outside release accepted")
+        check(!route(.leftMouseUp, outside), "outside release blocked before system dispatch")
+        check(!finish(.leftMouseUp), "early rejected release clears old final pair")
+        check(route(.leftMouseDown) && finish(.leftMouseDown), "press before outside drag accepted")
+        check(!route(.leftMouseDragged, outside), "outside drag blocked before system dispatch")
+        check(!finish(.leftMouseUp), "early rejected drag clears old final pair")
+        windows = [cover, auth, desktop]; early.refresh()
+        check(!route(.leftMouseDown), "early foreground overlay prevents candidate click-through")
+        windows = [auth, desktop]; early.refresh()
+        check(route(.leftMouseDown) && finish(.leftMouseDown), "new press before expiry accepted")
+        now += 0.31
+        check(!route(.leftMouseUp), "expired early candidate denied")
+        early.refresh()
+        check(!finish(.leftMouseUp), "refresh cannot resurrect early expired pair")
+        check(!route(.leftMouseDown, CGPoint(x: CGFloat.infinity, y: 100)), "early nonfinite pointer denied")
+        check(!route(.tabletPointer), "unsupported early pointer event denied")
+        check(!route(.leftMouseDown, authMode: false), "early caller mode mismatch denied")
+        early.setMode(authenticating: false, recovering: true)
+        windows = [button, menu, desktop]; early.recoveryMenuRegion = button.bounds; early.refresh()
+        check(!route(.leftMouseDown, outside, authMode: false), "early recovery desktop click denied")
+        check(route(.leftMouseDown, buttonPoint, authMode: false), "early recovery exact status button routed")
+        check(finish(.leftMouseDown, buttonPoint, id: 10, authMode: false), "late recovery status button validated")
+        check(route(.leftMouseUp, buttonPoint, authMode: false)
+              && finish(.leftMouseUp, buttonPoint, id: 10, authMode: false), "recovery button release validated at both stages")
+        check(route(.leftMouseDown, menuPoint, authMode: false)
+              && finish(.leftMouseDown, menuPoint, id: 11, authMode: false), "recovery menu remains accessible at both stages")
+        early.setMode(authenticating: false, recovering: false)
+        check(!route(.leftMouseUp, menuPoint, authMode: false), "early ending scope revokes pointer routing")
         print("SUCCESS: \(count) authentication input scope assertions; no event tap, input injection or authentication UI")
     }
 }

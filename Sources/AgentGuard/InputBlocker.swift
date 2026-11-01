@@ -15,8 +15,15 @@ final class InputBlocker: EventTapDriver {
         set { inputScope.recoveryMenuRegion = newValue }
     }
     private(set) var state: GuardState = .inactive
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    // The session tap blocks normal guarding before WindowServer dispatch;
+    // the annotated tap retains exact receiving-window checks for authentication.
+    enum Stage { case session, annotated }
+    private lazy var taps = EventTapPairDriver(
+        first: NativeInputTap(location: .cgSessionEventTap,
+            callback: Self.sessionEventTapCallback, owner: Unmanaged.passUnretained(self).toOpaque()),
+        second: NativeInputTap(location: .cgAnnotatedSessionEventTap,
+            callback: Self.eventTapCallback, owner: Unmanaged.passUnretained(self).toOpaque())
+    )
     private var spaceHandler: SpaceHandler?
     private var activationShortcutHandler: ActivationShortcutHandler?
     private var shouldPassRightCommandRelease = false
@@ -43,34 +50,17 @@ final class InputBlocker: EventTapDriver {
         return healthy
     }
 
-    var isValid: Bool {
-        guard let eventTap, let runLoopSource else { return false }
-        return CFMachPortIsValid(eventTap) && CFRunLoopSourceIsValid(runLoopSource)
-    }
-
-    var isEnabled: Bool {
-        guard isValid, let eventTap else { return false }
-        return CGEvent.tapIsEnabled(tap: eventTap)
-    }
+    var isValid: Bool { taps.isValid }
+    var isEnabled: Bool { taps.isEnabled }
 
     func enable() {
-        guard isValid, let eventTap else { return }
-        CGEvent.tapEnable(tap: eventTap, enable: true)
-        logger.notice("Input tap enable read-back: \(self.isEnabled)")
+        taps.enable()
+        logger.notice("Input tap pair enable read-back: \(self.isEnabled)")
     }
 
     func invalidate() {
         generation &+= 1
-        if let eventTap, CFMachPortIsValid(eventTap) {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-            CFRunLoopSourceInvalidate(runLoopSource)
-        }
-        if let eventTap { CFMachPortInvalidate(eventTap) }
-        runLoopSource = nil
-        eventTap = nil
+        taps.invalidate()
         shouldPassRightCommandRelease = false
         pendingActivation = false
         consumedShortcutKeys.removeAll()
@@ -78,33 +68,69 @@ final class InputBlocker: EventTapDriver {
     }
 
     func create() -> Bool {
-        let mask = Self.eventMask
-        let opaqueSelf = Unmanaged.passUnretained(self).toOpaque()
-
-        guard let tap = CGEvent.tapCreate(
-            // The annotated stage supplies the actual target window for scope checks.
-            tap: .cgAnnotatedSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: Self.eventTapCallback,
-            userInfo: opaqueSelf
-        ) else {
-            logger.error("Input tap creation failed")
+        guard taps.create() else {
+            logger.error("Input tap pair creation failed; both stages discarded")
             return false
         }
-
-        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
-            CFMachPortInvalidate(tap)
-            logger.error("Input tap run-loop source creation failed")
-            return false
-        }
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-
-        eventTap = tap
-        runLoopSource = source
-        logger.notice("Input tap created at annotated session stage")
+        logger.notice("Input tap pair created: session guard + annotated authentication")
         return true
+    }
+
+    /// Each native endpoint owns its Mach port and matching run-loop source.
+    /// Pair creation is synchronous on the main actor; a partial pair is removed
+    /// before the run loop can dispatch input through it.
+    private final class NativeInputTap: EventTapDriver {
+        private let location: CGEventTapLocation
+        private let callback: CGEventTapCallBack
+        private let owner: UnsafeMutableRawPointer
+        private var tap: CFMachPort?
+        private var source: CFRunLoopSource?
+
+        init(location: CGEventTapLocation, callback: @escaping CGEventTapCallBack,
+             owner: UnsafeMutableRawPointer) {
+            self.location = location
+            self.callback = callback
+            self.owner = owner
+        }
+
+        var isValid: Bool {
+            guard let tap, let source else { return false }
+            return CFMachPortIsValid(tap) && CFRunLoopSourceIsValid(source)
+        }
+        var isEnabled: Bool {
+            guard isValid, let tap else { return false }
+            return CGEvent.tapIsEnabled(tap: tap)
+        }
+        func enable() {
+            guard isValid, let tap else { return }
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+        func invalidate() {
+            if let tap, CFMachPortIsValid(tap) {
+                CGEvent.tapEnable(tap: tap, enable: false)
+                CFMachPortInvalidate(tap)
+            }
+            if let source {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+                CFRunLoopSourceInvalidate(source)
+            }
+            source = nil
+            tap = nil
+        }
+        func create() -> Bool {
+            guard let tap = CGEvent.tapCreate(
+                tap: location, place: .headInsertEventTap, options: .defaultTap,
+                eventsOfInterest: InputBlocker.eventMask, callback: callback, userInfo: owner
+            ) else { return false }
+            guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+                CFMachPortInvalidate(tap)
+                return false
+            }
+            self.tap = tap
+            self.source = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+            return true
+        }
     }
 
     func setState(_ state: GuardState) {
@@ -117,15 +143,26 @@ final class InputBlocker: EventTapDriver {
                            recovering: state == .recoveryFailed || state == .restoringInput)
     }
 
+    private nonisolated static let sessionEventTapCallback: CGEventTapCallBack = {
+        _, type, event, userInfo in
+        routeEvent(type: type, event: event, userInfo: userInfo, stage: .session)
+    }
+
     private nonisolated static let eventTapCallback: CGEventTapCallBack = {
         _, type, event, userInfo in
+        routeEvent(type: type, event: event, userInfo: userInfo, stage: .annotated)
+    }
+
+    private nonisolated static func routeEvent(
+        type: CGEventType, event: CGEvent, userInfo: UnsafeMutableRawPointer?, stage: Stage
+    ) -> Unmanaged<CGEvent>? {
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let blocker = Unmanaged<InputBlocker>.fromOpaque(userInfo).takeUnretainedValue()
 
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             MainActor.assumeIsolated {
                 let generation = blocker.generation
-                blocker.logger.error("Input tap disabled: event type \(type.rawValue)")
+                blocker.logger.error("Input tap disabled at \(String(describing: stage), privacy: .public): event type \(type.rawValue)")
                 // Rebuild after leaving the callback, and ignore work queued by
                 // a listener that has since been replaced.
                 Task { @MainActor [weak blocker] in
@@ -145,6 +182,8 @@ final class InputBlocker: EventTapDriver {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         let pointerLocation = event.location
+        let observedWindow = event.getIntegerValueField(.mouseEventWindowUnderMousePointer)
+        let observedWindowID = observedWindow > 0 && observedWindow <= Int64(UInt32.max) ? UInt32(observedWindow) : 0
         let handlingWindow = event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent)
         let pointedWindow = handlingWindow // unknown receiving window is never a rectangle-only fallback
         let pointerWindowID = pointedWindow > 0 && pointedWindow <= Int64(UInt32.max) ? UInt32(pointedWindow) : 0
@@ -167,7 +206,9 @@ final class InputBlocker: EventTapDriver {
                 hasOtherModifiers: hasOtherModifiers,
                 pointerLocation: pointerLocation,
                 pointerWindowID: pointerWindowID,
-                targetPID: targetPID
+                targetPID: targetPID,
+                stage: stage,
+                observedWindowID: observedWindowID
             )
         }
         return shouldDrop ? nil : Unmanaged.passUnretained(event)
@@ -182,11 +223,38 @@ final class InputBlocker: EventTapDriver {
         hasOtherModifiers: Bool,
         pointerLocation: CGPoint = .zero,
         pointerWindowID: UInt32 = 0,
-        targetPID: Int32 = 0
+        targetPID: Int32 = 0,
+        stage: Stage = .annotated,
+        observedWindowID: UInt32 = 0
     ) -> Bool {
         let isRightCommandPressed = ActivationShortcutMatcher.isRightCommandPressed(
             modifierFlagsRawValue: modifierFlagsRawValue
         )
+        if stage == .session {
+            // Keep the matching Command release's bookkeeping for the late tap.
+            if EventOriginClassifier.isPhysical(sourcePID: sourcePID),
+               shouldPassRightCommandRelease,
+               type == .flagsChanged, keyCode == Self.rightCommandKeyCode,
+               !isRightCommandPressed {
+                return false
+            }
+            switch state {
+            case .inactive:
+                return false // shortcuts are processed once, at the late stage
+            case .guarding:
+                break // consume physical input with the existing policy below
+            case .authenticating, .restoringInput, .recoveryFailed:
+                guard EventOriginClassifier.isPhysical(sourcePID: sourcePID) else { return true }
+                if type == .keyDown || type == .keyUp || type == .flagsChanged {
+                    if state == .authenticating { return false } // late exact keyboard target/focus check
+                    break // recovery Space is consumed and dispatched once below
+                }
+                return !inputScope.mayRoutePointer(at: pointerLocation, type: type,
+                    authenticating: state == .authenticating,
+                    observedWindowID: observedWindowID, handlingWindowID: pointerWindowID)
+            }
+        }
+
         if EventOriginClassifier.isPhysical(sourcePID: sourcePID),
            shouldPassRightCommandRelease,
            type == .flagsChanged,

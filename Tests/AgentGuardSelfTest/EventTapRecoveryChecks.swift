@@ -81,5 +81,36 @@ func eventTapRecoveryChecks() -> [(String, Bool)] {
     checks.append(("failed recovery remains retryable after environment recovers",
                    EventTapRecovery.ensureHealthy(unavailable)
                    && unavailable.calls == ["invalidate", "create", "enable"]))
+    // Fault injection against the pair driver used by the real InputBlocker.
+    for side in 0...1 {
+        let first = FakeTap(), second = FakeTap()
+        let pair = EventTapPairDriver(first: first, second: second)
+        let broken = side == 0 ? first : second
+        broken.creationWorks = false
+        checks.append(("pair creation failure side \(side) cleans both endpoints",
+            !EventTapRecovery.ensureHealthy(pair) && !first.isValid && !second.isValid
+            && !first.isEnabled && !second.isEnabled))
+        broken.creationWorks = true
+        checks.append(("pair failure side \(side) remains retryable", EventTapRecovery.ensureHealthy(pair)))
+        first.calls = []; second.calls = []
+        broken.isEnabled = false
+        checks.append(("single disabled endpoint side \(side) marks pair unhealthy", !pair.isEnabled))
+        checks.append(("single disabled endpoint side \(side) re-enables without replacement",
+            EventTapRecovery.ensureHealthy(pair) && !first.calls.contains("create") && !second.calls.contains("create")))
+        first.calls = []; second.calls = []
+        broken.isValid = false
+        checks.append(("single invalid endpoint side \(side) invalidates whole pair", !pair.isValid && !pair.isEnabled))
+        checks.append(("single invalid endpoint side \(side) rebuilds whole pair",
+            EventTapRecovery.ensureHealthy(pair) && first.calls.contains("create") && second.calls.contains("create")))
+        broken.enableWorks = false
+        broken.isEnabled = false
+        checks.append(("single stuck endpoint side \(side) cannot degrade to one healthy tap",
+            !EventTapRecovery.ensureHealthy(pair) && !first.isValid && !second.isValid))
+    }
+    let first = FakeTap(), second = FakeTap()
+    let invalidPair = EventTapPairDriver(first: first, second: second)
+    second.newSourceValid = false
+    checks.append(("pair rejects reported creation success with invalid run-loop source",
+        !EventTapRecovery.ensureHealthy(invalidPair) && !first.isValid && !second.isValid))
     return checks
 }

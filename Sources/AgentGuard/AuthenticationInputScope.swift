@@ -110,6 +110,40 @@ final class AuthenticationInputScope {
             && snapshot.windows.contains { $0.authentication && $0.owner == targetPID }
     }
 
+    /// Preliminary session-stage routing, never final authorization. The late
+    /// stage must still match the real receiving window and validate pairing.
+    /// Known early window IDs can veto a stale candidate; zero is not a match.
+    func mayRoutePointer(at point: CGPoint, type: CGEventType, authenticating: Bool,
+                         observedWindowID: UInt32 = 0, handlingWindowID: UInt32 = 0) -> Bool {
+        let button = Self.button(for: type)
+        let down = type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown
+        let up = type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp
+        let drag = type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged
+        if down { presses.removeValue(forKey: button) }
+        func deny() -> Bool {
+            if down || up || drag { presses.removeValue(forKey: button) }
+            return false
+        }
+        guard self.authenticating || recovering,
+              authenticating == self.authenticating else { return deny() }
+        if type == .mouseMoved { return true }
+        guard point.x.isFinite, point.y.isFinite, let snapshot = freshSnapshot,
+              let top = snapshot.windows.first(where: { $0.bounds.contains(point) }),
+              observedWindowID == 0 || observedWindowID == top.id,
+              handlingWindowID == 0 || handlingWindowID == top.id,
+              let target = candidateTarget(for: top, at: point)
+        else { return deny() }
+        if down || type == .scrollWheel { return true }
+        if up || drag {
+            guard let press = presses[button], press.target == target,
+                  clock() - press.time >= 0, clock() - press.time <= maximumPressAge
+            else { return deny() }
+            // Leave the paired press intact for final annotated-stage validation.
+            return true
+        }
+        return deny()
+    }
+
     func allowsPointer(at point: CGPoint, type: CGEventType, authenticating: Bool, windowID: UInt32) -> Bool {
         guard self.authenticating || recovering,
               authenticating == self.authenticating else { return false }
@@ -146,6 +180,10 @@ final class AuthenticationInputScope {
         guard eventWindowID != 0,
               let top = snapshot.windows.first(where: { $0.bounds.contains(point) }),
               top.id == eventWindowID else { return nil }
+        return candidateTarget(for: top, at: point)
+    }
+
+    private func candidateTarget(for top: Window, at point: CGPoint) -> Target? {
         if authenticating {
             return top.authentication ? .authentication(top.id) : nil
         }
