@@ -227,7 +227,7 @@ final class AuthenticationInputScope {
         }
     }
 
-    private static func captureSnapshot() -> Snapshot {
+    static func captureSnapshot() -> Snapshot {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
                 as? [[String: Any]] else {
             return Snapshot(windows: [], authenticationHasFocus: false)

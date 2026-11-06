@@ -16,6 +16,8 @@ final class GuardController {
     private let keyboardBacklight = KeyboardBacklightController()
     private let powerController = PowerAssertionController()
     private let blackoutController = DisplayBlackoutController()
+    private let authenticationDisplayRestorer = AuthenticationDisplayRestorer()
+    private let authenticationFocusRestorer = AuthenticationFocusRestorer()
     private let secureInputStatus: () -> SecureInputStatus
     private let permissionCheck: ((Bool) -> Bool)?
     private let monitorHealth: Bool
@@ -87,7 +89,9 @@ final class GuardController {
     }
 
     private func restoreDisplays() -> String? {
+        authenticationDisplayRestorer.cancel()
         let error = blackoutController.restoreDisplays()
+        inputBlocker.refreshAuthenticationScope()
         displayRecoveryError = error
         return error
     }
@@ -285,17 +289,40 @@ final class GuardController {
         resumptionStartedAt = nil
         _ = installInputBlocker()
         transition(to: .authenticating)
-        // Display availability must not gate identity verification. A powered-off
-        // TV may reject reconnection while the built-in authentication screen works.
-        let displayError = restoreDisplays()
+        // Restore the built-in escape screen first. A healthy owned blackout
+        // retains disconnected externals until the native dialog has appeared.
+        authenticationDisplayRestorer.cancel()
+        authenticationFocusRestorer.cancel()
+        let preparation = blackoutController.restoreForAuthentication()
+        let displayError = preparation.error
+        displayRecoveryError = displayError
         if let displayError {
             logger.error("Authentication continuing with pending display recovery: \(displayError, privacy: .public)")
             publishStateChange(.authenticating, "显示恢复待完成，仍可验证解除：" + displayError)
         }
         NSApp.activate(ignoringOtherApps: true)
 
+        if let displayID = preparation.deferredDisplayID {
+            authenticationDisplayRestorer.start(builtInDisplayID: displayID) { [weak self] reason in
+                guard let self, self.state == .authenticating else { return }
+                self.logger.notice("Authentication display recovery: \(reason.rawValue, privacy: .public)")
+                self.authenticationFocusRestorer.prepareForDisplayRecovery()
+                let error = self.restoreDisplays()
+                guard self.state == .authenticating else {
+                    self.authenticationFocusRestorer.cancel()
+                    return
+                }
+                self.authenticationFocusRestorer.displayRecoveryCompleted()
+                if let error {
+                    self.publishStateChange(.authenticating, "显示恢复待完成，仍可验证解除：" + error)
+                }
+            }
+        }
+
         authenticator.authenticate(timeout: 10, willFinish: { [weak self] in
             // Revoke every authentication allowance before LAContext invalidation.
+            self?.authenticationDisplayRestorer.cancel()
+            self?.authenticationFocusRestorer.cancel()
             self?.inputBlocker.setState(.restoringInput)
         }) { [weak self] outcome in
             guard let self else { return }
@@ -399,6 +426,10 @@ final class GuardController {
     }
 
     private func transition(to newState: GuardState, message: String? = nil) {
+        if newState != .authenticating {
+            authenticationDisplayRestorer.cancel()
+            authenticationFocusRestorer.cancel()
+        }
         if newState == .guarding {
             let secure = secureInputStatus()
             guard !secure.enabled else {

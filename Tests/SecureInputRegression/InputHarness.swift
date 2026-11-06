@@ -8,6 +8,7 @@ import Foundation
     var allowPointerRouting = false
     func mayRoutePointer(at: CGPoint, type: CGEventType, authenticating: Bool,
                          observedWindowID: UInt32 = 0, handlingWindowID: UInt32 = 0) -> Bool { allowPointerRouting }
+    func refresh() {}
     func setMode(authenticating: Bool, recovering: Bool) {}
     func allowsPointer(at: CGPoint, type: CGEventType, authenticating: Bool, windowID: UInt32) -> Bool { allowPointer }
     func allowsKeyboard(targetPID: Int32) -> Bool { allowKeyboard }

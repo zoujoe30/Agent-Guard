@@ -143,6 +143,13 @@ final class InputBlocker: EventTapDriver {
                            recovering: state == .recoveryFailed || state == .restoringInput)
     }
 
+    /// Refresh geometry/focus after display topology changes without granting
+    /// any new input scope or carrying a stale pre-reconnection snapshot.
+    func refreshAuthenticationScope() {
+        guard state == .authenticating else { return }
+        inputScope.refresh()
+    }
+
     private nonisolated static let sessionEventTapCallback: CGEventTapCallBack = {
         _, type, event, userInfo in
         routeEvent(type: type, event: event, userInfo: userInfo, stage: .session)

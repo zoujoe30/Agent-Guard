@@ -285,6 +285,42 @@ import AgentGuardCore
         check(updateTest.state == .guarding && !updateTest.installationSafety.permitsInstallation,
               "guarding never presents installation-safe snapshot")
         updateTest.deactivate()
+        // Stage external recovery without changing the input permission rules.
+        DisplayBlackoutController.deferredDisplayID = 1
+        updateTest.activate()
+        let beforeStaged = DisplayBlackoutController.restoreCount
+        updateTest.beginAuthentication()
+        check(updateTest.state == .authenticating && AuthenticationDisplayRestorer.pending != nil,
+              "native auth begins while staged external restoration is pending")
+        check(DisplayBlackoutController.restoreCount == beforeStaged,
+              "staged auth does not reconnect external displays before native dialog")
+        let onDialog = AuthenticationDisplayRestorer.pending
+        let refreshed = InputBlocker.refreshCount
+        onDialog?(.dialogVisible)
+        check(DisplayBlackoutController.restoreCount == beforeStaged + 1 && InputBlocker.refreshCount > refreshed,
+              "dialog readiness restores displays and refreshes existing input scope")
+        check(updateTest.state == .authenticating && InputBlocker.lastState == .authenticating,
+              "reconnection never grants unlocked input")
+        AuthenticationController.finish(.timedOut)
+        check(AuthenticationDisplayRestorer.pending == nil && !AuthenticationFocusRestorer.pending && updateTest.state == .guarding,
+              "timeout revokes staged recovery before resuming guard")
+        let afterTimeout = DisplayBlackoutController.restoreCount
+        onDialog?(.dialogVisible)
+        check(DisplayBlackoutController.restoreCount == afterTimeout,
+              "late completion cannot restore displays while guarding")
+        updateTest.beginAuthentication()
+        AuthenticationController.finish(.success)
+        check(updateTest.state == .inactive && AuthenticationDisplayRestorer.pending == nil && !AuthenticationFocusRestorer.pending,
+              "early auth success cancels pending wait and restores externals")
+        updateTest.activate(); updateTest.beginAuthentication()
+        DisplayBlackoutController.restoreFailure = "external disappeared"
+        AuthenticationDisplayRestorer.pending?(.fallback)
+        check(updateTest.state == .authenticating, "fallback display failure never cancels authentication")
+        AuthenticationController.finish(.success)
+        check(updateTest.state == .inactive, "external failure never relocks successful native authentication")
+        DisplayBlackoutController.restoreFailure = nil
+        _ = updateTest.recoverDisplaysOnLaunch()
+        DisplayBlackoutController.deferredDisplayID = nil
         print("SUCCESS: \(checks) regression assertions; no physical input, display or authentication operations")
     }
 }

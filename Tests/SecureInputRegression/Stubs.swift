@@ -19,6 +19,8 @@ import AgentGuardCore
         Self.failure = failureHandler
         return Self.healthy
     }
+    static var refreshCount = 0
+    func refreshAuthenticationScope() { Self.refreshCount += 1 }
     func setState(_ state: GuardState) { Self.lastState = state }
 }
 @MainActor final class AuthenticationController {
@@ -47,6 +49,11 @@ import AgentGuardCore
     func release() {}
 }
 @MainActor final class DisplayBlackoutController {
+    static var deferredDisplayID: UInt32?
+    func restoreForAuthentication() -> (deferredDisplayID: UInt32?, error: String?) {
+        if let id = Self.deferredDisplayID { return (id, nil) }
+        return (nil, restoreDisplays())
+    }
     static var healthFailure: String?
     static var restoreFailure: String?
     func healthError() -> String? { Self.healthFailure }
@@ -72,4 +79,21 @@ import AgentGuardCore
     func turnOff() -> String? { Self.offCount += 1; return Self.offError }
     func restore() -> String? { Self.restoreCount += 1; return Self.restoreError }
     func keepOff() -> String? { Self.healthError }
+}
+
+@MainActor final class AuthenticationDisplayRestorer {
+    enum Reason: String { case dialogVisible, fallback }
+    static var pending: ((Reason) -> Void)?
+    static var startCount = 0
+    func start(builtInDisplayID: UInt32, completion: @escaping (Reason) -> Void) {
+        Self.startCount += 1; Self.pending = completion
+    }
+    func cancel() { Self.pending = nil }
+}
+
+@MainActor final class AuthenticationFocusRestorer {
+    static var pending = false
+    func prepareForDisplayRecovery() { Self.pending = true }
+    func displayRecoveryCompleted() {}
+    func cancel() { Self.pending = false }
 }

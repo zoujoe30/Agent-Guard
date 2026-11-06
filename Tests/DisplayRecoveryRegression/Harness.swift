@@ -205,6 +205,40 @@ import Darwin
         check((try! saveFailureJournal.load())?.external == [tv, mi], "save failure leaves original durable journal")
         check(saveFailureHW.calls.isEmpty, "save failure never proceeds to display operations or clear")
         check((try! FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("save-failure/excluded-recovery").path)).count == 1, "original is archived even when reduced journal save fails")
+        let stageJournal = DisplayRecoveryJournal(url: dir.appendingPathComponent("staged/recovery.json"))
+        let stageHW = FakeHardware(); let stageWatcher = FakeWatchdog()
+        let staged = DisplayBlackoutController(hardware: stageHW, journal: stageJournal, watcher: stageWatcher)
+        check(staged.blackOutDisplays() == nil, "prepare owned blackout for staged authentication")
+        stageHW.calls = []
+        let preparation = staged.restoreForAuthentication()
+        check(preparation.deferredDisplayID == 1 && preparation.error == nil && stageHW.calls == ["bright"],
+              "authentication initially restores only built-in brightness")
+        check((try! stageJournal.load()) != nil && stageWatcher.isRunning,
+              "staged authentication retains durable recovery and watchdog")
+        check(staged.restoreDisplays() == nil && (try! stageJournal.load()) == nil && !stageWatcher.isRunning,
+              "complete display restoration clears staged recovery")
+        stageHW.calls = []
+        check(staged.restoreForAuthentication().deferredDisplayID == nil && stageHW.calls.isEmpty,
+              "visible session never schedules staged recovery")
+        check(staged.blackOutDisplays() == nil, "prepare staged display failure")
+        stageHW.failBrightness = true; stageHW.calls = []
+        let failedStage = staged.restoreForAuthentication()
+        check(failedStage.deferredDisplayID == nil && failedStage.error != nil && stageHW.calls.contains("on"),
+              "failed built-in restore falls back to full restoration")
+        check((try! stageJournal.load()) != nil, "failed fallback preserves recovery record")
+        stageHW.failBrightness = false; _ = staged.restoreDisplays()
+        _ = staged.blackOutDisplays(); stageWatcher.isRunning = false; stageHW.calls = []
+        check(staged.restoreForAuthentication().deferredDisplayID == nil && stageHW.calls == ["bright", "on"],
+              "dead watchdog refuses staging and restores all screens")
+        _ = staged.blackOutDisplays(); stageHW.health = "external already online"; stageHW.calls = []
+        check(staged.restoreForAuthentication().deferredDisplayID == nil && stageHW.calls.contains("on"),
+              "unexpected display topology uses complete recovery")
+        stageHW.health = nil
+        let anotherOwner = DisplayRecoveryRecord(token: UUID(), ownerPID: getppid(), builtIn: hw.inner, brightness: 0.6, external: [hw.outer])
+        try stageJournal.save(anotherOwner); stageHW.calls = []
+        check(staged.restoreForAuthentication().error != nil && stageHW.calls.isEmpty,
+              "staging never touches another live owner's recovery")
+        try stageJournal.clear(anotherOwner.token)
         print("Display recovery: \(count)/\(count) checks passed")
     }
 }

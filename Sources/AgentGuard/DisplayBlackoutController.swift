@@ -45,6 +45,29 @@ final class DisplayBlackoutController {
             return error.localizedDescription + (restoreError.map { " 回滚未完成：\($0)" } ?? "")
         }
     }
+    /// Stage only this process's healthy managed-blackout session. Keep the
+    /// journal and independent watchdog armed until external recovery completes.
+    func restoreForAuthentication() -> (deferredDisplayID: UInt32?, error: String?) {
+        do {
+            let displayID = try journal.withRecoveryLock { () throws -> UInt32? in
+                guard let owned = record,
+                      let pending = try journal.loadForRecovery(currentBoot: currentBoot()),
+                      pending.token == owned.token, pending.ownerPID == getpid(),
+                      watcher.isRunning else { return nil }
+                let filtered = try journal.applyingExclusions(pending, excludedUUIDs: excludedUUIDs())
+                guard !filtered.external.isEmpty, hardware.blackoutHealth(filtered) == nil else { return nil }
+                try hardware.brightness(filtered.builtIn, filtered.brightness)
+                record = filtered
+                return filtered.builtIn.id
+            }
+            if let displayID { return (displayID, nil) }
+        } catch {
+            // A partial-preparation failure must never prevent native identity
+            // verification. Fall back to the existing complete recovery path.
+        }
+        return (nil, restoreDisplays())
+    }
+
     func restoreDisplays() -> String? {
         do {
             return try journal.withRecoveryLock {
