@@ -1,0 +1,37 @@
+name: Verify Sparkle update source
+
+on:
+  pull_request:
+    paths: [updates/appcast.xml]
+  push:
+    branches: [main]
+    paths: [updates/appcast.xml]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'zoujoe30/Agent-Guard'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify public signed assets before merging
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_REF: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 Tools/promote-sparkle-release.py --check-feed updates/appcast.xml \
+            --trusted-ref "$TRUSTED_REF"
+      - name: Verify the live update source after merging
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_REF: ${{ github.event.before }}
+        run: |
+          python3 Tools/promote-sparkle-release.py --check-feed updates/appcast.xml \
+            --trusted-ref "$TRUSTED_REF" --check-live

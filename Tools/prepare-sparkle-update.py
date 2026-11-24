@@ -21,6 +21,9 @@ ET.register_namespace('sparkle', SPARKLE)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zip', required=True, type=Path, dest='archive')
+    parser.add_argument('--pkg', type=Path, help='include the signed PKG in SHA256SUMS.txt')
+    parser.add_argument('--apple-silicon', action='store_true',
+                        help='declare arm64 as the Sparkle hardware requirement')
     parser.add_argument('--version', required=True)
     parser.add_argument('--build', required=True)
     parser.add_argument('--download-url', required=True)
@@ -30,6 +33,9 @@ def main():
     args = parser.parse_args()
     archive = args.archive.resolve(strict=True)
     signer = args.sign_update.resolve(strict=True)
+    package_file = args.pkg.resolve(strict=True) if args.pkg else None
+    if package_file and package_file.name != archive.with_suffix('.pkg').name:
+        raise ValueError('PKG and ZIP must have matching release basenames')
     if not re.fullmatch(r'\d+(?:\.\d+){1,2}', args.version):
         raise ValueError('version must be numeric, for example 0.3.21')
     if not re.fullmatch(r'[1-9]\d*', args.build):
@@ -97,6 +103,8 @@ guard key.isValidSignature(Data(base64Encoded: a[2])!, for: data) else { exit(1)
     ET.SubElement(item, f'{{{SPARKLE}}}version').text = args.build
     ET.SubElement(item, f'{{{SPARKLE}}}shortVersionString').text = args.version
     ET.SubElement(item, f'{{{SPARKLE}}}minimumSystemVersion').text = info.get('LSMinimumSystemVersion', '14.0')
+    if args.apple_silicon:
+        ET.SubElement(item, f'{{{SPARKLE}}}hardwareRequirements').text = 'arm64'
     ET.SubElement(item, 'enclosure', {
         'url': args.download_url, 'length': str(archive.stat().st_size),
         'type': 'application/octet-stream', f'{{{SPARKLE}}}edSignature': signature,
@@ -110,7 +118,7 @@ guard key.isValidSignature(Data(base64Encoded: a[2])!, for: data) else { exit(1)
     subprocess.run(sign_command + ['--verify', str(appcast)], check=True)
     ET.parse(appcast)
     checksums = []
-    for asset in (archive, appcast):
+    for asset in ([package_file] if package_file else []) + [archive, appcast]:
         with asset.open('rb') as stream:
             digest = hashlib.sha256()
             for block in iter(lambda: stream.read(1024 * 1024), b''):

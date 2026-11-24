@@ -48,3 +48,12 @@ python3 Tools/verify-sparkle-update.py \
 ```
 
 公钥应来自已信任的旧版或受控源码/CI 配置；不要从待验证 ZIP 自动取公钥作为信任来源。验证器使用 CryptoKit 验证 feed 和 ZIP 两层签名，同时比对 ZIP 内公钥、bundle ID、version、build、文件名、下载 URL 和长度。它只读输入，不联网、不调用钥匙串。`test.sh` 包含使用一次性测试密钥的离线回归，不接触发布密钥。
+
+## Apple Silicon 预发布的 GitHub Actions 流程
+
+1. 在已有签名身份的机器上准备 Apple Silicon ZIP 和同名 PKG。使用上方命令签名 ZIP 和 appcast，并加上 `--apple-silicon --pkg '/absolute/output/Agent.Guard-0.3.26.pkg'`。签名仍由本机现有 Sparkle 钥匙串密钥完成。GitHub Actions 只接收签好名的公开交付物，没有私钥。
+2. 由维护者在 GitHub 创建 **Pre-release** 草稿并上传四个文件：`Agent.Guard-<version>.zip`、`Agent.Guard-<version>.pkg`、`appcast.xml`、`SHA256SUMS.txt`。选 `local-<version>-build<build>`，目标选 main 上对应的精确提交。在已授权的 GitHub CLI 中也可用 `gh release create <tag> <four-files> --draft --prerelease --latest=false --target <full-sha>`，再从草稿确认附件。不要覆盖已有标签、草稿或发布。
+3. 从 main 运行 **Promote verified Sparkle pre-release**，提供 tag、完整 SHA，以及原始 `SHA256SUMS.txt` 的 SHA-256（`shasum -a 256 SHA256SUMS.txt`）。工作流读取草稿附件、验证哈希和现有信任密钥的两层签名，再发布一次。发布后使用无需凭据的公开下载地址重新下载并核验四个文件。失败时以相同输入重跑会先核对已有发布，不重复发布或替换附件。
+4. 成功后下载 Actions 工件 `verified-sparkle-feed-proposal`。按既有分支保护提交 PR，只把通过校验的 `appcast.xml` 原字节复制到 `updates/appcast.xml`，用 `receipt.json` 写明下载及校验回执。**Verify Sparkle update source** 会在该 PR 上核验公开附件和签名，合并后核验实际更新地址返回的字节。按原有审批流程合并。Actions 不推送 main、不改分支保护，也不需要额外仓库密钥。
+
+若工作流发布后公开校验失败，保持现有 appcast。核对公开附件与签名前不要合并 feed PR。工作流不在个人 Mac 上安装或运行应用。

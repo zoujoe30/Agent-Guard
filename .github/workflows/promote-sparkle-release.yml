@@ -1,0 +1,53 @@
+name: Promote verified Sparkle pre-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact local-version-build tag of the owner-staged pre-release
+        required: true
+        type: string
+      target:
+        description: Full approved commit SHA already on main
+        required: true
+        type: string
+      manifest_sha256:
+        description: SHA-256 of the original signed bundle's SHA256SUMS.txt
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: sparkle-pre-release-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.repository == 'zoujoe30/Agent-Guard' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release failure and retry paths
+        run: python3 -m unittest discover -s Tests/ReleasePromotion -v
+      - name: Verify draft, publish once, and verify unauthenticated download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.target }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: |
+          python3 Tools/promote-sparkle-release.py \
+            --tag "$RELEASE_TAG" --target "$RELEASE_COMMIT" \
+            --manifest-sha256 "$MANIFEST_SHA256" --output "$RUNNER_TEMP/feed-proposal"
+      - name: Preserve verified feed proposal for protected-branch review
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-sparkle-feed-proposal
+          path: ${{ runner.temp }}/feed-proposal/
+          if-no-files-found: error
