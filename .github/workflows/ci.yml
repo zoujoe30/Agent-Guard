@@ -15,5 +15,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Run self-tests
         run: ./test.sh
+      - name: Test Sparkle release promotion safeguards
+        run: python3 -m unittest discover -s Tests/ReleasePromotion -v
       - name: Build all release products
         run: swift build -c release
