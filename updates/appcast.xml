@@ -6,15 +6,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/zoujoe30/Agent-Guard</link>
     <description>Agent Guard signed application updates</description>
     <item>
-      <title>Agent Guard 0.3.23</title>
-      <pubDate>Sun, 01 Nov 2026 17:30:34 +0000</pubDate>
-      <sparkle:version>35</sparkle:version>
-      <sparkle:shortVersionString>0.3.23</sparkle:shortVersionString>
+      <title>Agent Guard 0.3.26</title>
+      <pubDate>Tue, 24 Nov 2026 14:07:44 +0000</pubDate>
+      <sparkle:version>38</sparkle:version>
+      <sparkle:shortVersionString>0.3.26</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/zoujoe30/Agent-Guard/releases/download/local-0.3.23-build35/Agent.Guard-0.3.23.zip" length="1332620" type="application/octet-stream" sparkle:edSignature="p47gVO0sUZVzb+G9W7KQQbLOS2zLcTtVprrilT7QO/R11tWSOQVNmCymgZEi1LjWiM+sNxA/+BQqtRiQ03nhAA=="></enclosure>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://github.com/zoujoe30/Agent-Guard/releases/download/local-0.3.26-build38/Agent.Guard-0.3.26.zip" length="1332285" type="application/octet-stream" sparkle:edSignature="z8qK2YzdxAGX2zOzByu/+5gh/FCk1cfRfvwj93h7RyC9L6/2CtDZrRA8FCuG2sTWfGNOzfGxusl52+QKitlYDQ=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: fxXmfo/mZRV0slLVgQ0lJ6j8iWf3uKR2tgo/smpkjqSx41G8hPjFXOqQy4JT6tIYX907x2HylxMZVkgpcgQYDQ==
-length: 1180
+edSignature: JivqSBd1shPhrO9ns1dVQR5UmKKvloLJfxohpUx0L8f9RCHlo204jcx8a/aD69ppgjzCLRhSOybVdg/PN+JNAQ==
+length: 1253
 -->
