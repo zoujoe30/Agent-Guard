@@ -23,6 +23,8 @@ self_test="$binary_dir/AgentGuardSelfTest"
 /usr/bin/codesign --verify --strict --verbose=2 "$self_test"
 "$self_test"
 
+"$project_dir/Tests/ACIdleSleepRegression/run.sh"
+
 "$project_dir/Tests/SecureInputRegression/run.sh"
 
 "$project_dir/Tests/DisplayRecoveryRegression/run.sh"

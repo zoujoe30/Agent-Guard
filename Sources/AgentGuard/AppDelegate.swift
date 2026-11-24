@@ -3,6 +3,7 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let guardController = GuardController()
+    private let acIdleSleepController = ACIdleSleepController()
     private lazy var controlServer = ControlServer(
         guardController: guardController
     )
@@ -15,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
     private var powerStatusMenuItem: NSMenuItem!
+    private var acIdleSleepMenuItem: NSMenuItem!
+    private var acIdleSleepStatusItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
     private var activationMenuView: ActivationMenuItemView!
     private var authenticateMenuItem: NSMenuItem!
@@ -26,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
+        acIdleSleepController.onChange = { [weak self] in self?.updateACIdleSleepMenu() }
+        acIdleSleepController.start()
         guardController.activationAllowed = { [weak self] in self?.updates.blocksActivation == false }
         updates.onChange = { [weak self] in
             guard let self else { return }
@@ -63,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        acIdleSleepController.stop()
         controlServer.stop()
         guardController.deactivate()
     }
@@ -81,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem)
 
         powerStatusMenuItem = NSMenuItem(
-            title: "电源：防止电脑休眠，同时保持显示器常亮",
+            title: "托管电源：防止电脑休眠，同时保持显示器常亮",
             action: nil,
             keyEquivalent: ""
         )
@@ -126,6 +132,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         preventSystemSleepMenuItem.isEnabled = false
         preventSystemSleepMenuItem.state = .on
         menu.addItem(preventSystemSleepMenuItem)
+
+        acIdleSleepMenuItem = NSMenuItem(
+            title: "插电时防止电脑空闲休眠",
+            action: #selector(toggleACIdleSleep),
+            keyEquivalent: ""
+        )
+        acIdleSleepMenuItem.target = self
+        acIdleSleepMenuItem.toolTip = "无需开启托管；不改变显示器休眠或锁屏。"
+        menu.addItem(acIdleSleepMenuItem)
+        acIdleSleepStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        acIdleSleepStatusItem.isEnabled = false
+        menu.addItem(acIdleSleepStatusItem)
 
         visibleDisplayMenuItem = NSMenuItem(
             title: "显示：保持常亮",
@@ -214,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let detail = lastMessage.map { "｜\($0)" } ?? ""
         statusMenuItem.title = "状态：\(state.statusText)\(detail)"
-        powerStatusMenuItem.title = "电源：\(guardController.powerStatusText)"
+        powerStatusMenuItem.title = "托管电源：\(guardController.powerStatusText)"
         let excluded = Set((UserDefaults.standard.stringArray(forKey: "com.local.agentguard.excluded-display-uuids") ?? []).compactMap { UUID(uuidString: $0)?.uuidString })
         excludedDisplaysMenuItem.title = "排除托管的外屏：\(excluded.count) 台（不自动开关）"
         visibleDisplayMenuItem.state =
@@ -281,6 +299,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if state == .inactive || state == .guarding {
             statusItem.button?.image = Self.displayShield(filled: state == .guarding, visible: guardController.displayMode == .visible)
         }
+    }
+
+    private func updateACIdleSleepMenu() {
+        acIdleSleepMenuItem.state = acIdleSleepController.isEnabled ? .on : .off
+        let status = switch acIdleSleepController.status {
+        case .disabled: ""
+        case .waitingForAC: "插电防休眠：等待接入电源"
+        case .powerUnavailable: "插电防休眠：暂无法确认电源"
+        case .assertionUnavailable: "插电防休眠：系统未能启用"
+        case .active: "插电防休眠：已生效，显示与锁屏按系统设置"
+        }
+        acIdleSleepStatusItem.title = status
+        acIdleSleepStatusItem.isHidden = status.isEmpty
+    }
+
+    @objc private func toggleACIdleSleep() {
+        acIdleSleepController.setEnabled(!acIdleSleepController.isEnabled)
     }
 
     private static func displayShield(filled: Bool, visible: Bool) -> NSImage? {
